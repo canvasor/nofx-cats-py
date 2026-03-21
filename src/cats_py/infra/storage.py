@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 class JsonlStorage:
@@ -18,6 +18,25 @@ class JsonlStorage:
         path = self.base_dir / f"{stream}.jsonl"
         with path.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(json_ready(payload), ensure_ascii=False) + "\n")
+
+    def stream_path(self, stream: str) -> Path:
+        return self.base_dir / f"{stream}.jsonl"
+
+    def iter_stream(self, stream: str) -> Iterator[dict[str, Any]]:
+        path = self.stream_path(stream)
+        if not path.exists():
+            return
+        with path.open("r", encoding="utf-8") as fp:
+            for line in fp:
+                line = line.strip()
+                if not line:
+                    continue
+                payload = json.loads(line)
+                if isinstance(payload, dict):
+                    yield payload
+
+    def read_stream(self, stream: str) -> list[dict[str, Any]]:
+        return list(self.iter_stream(stream))
 
     def append_snapshot(
         self,
@@ -39,6 +58,25 @@ class JsonlStorage:
             "params": params or {},
             "status": status,
             "latency_ms": latency_ms,
+            "tags": tags or {},
+            "payload": json_ready(payload),
+        }
+        self.append(stream, envelope)
+
+    def append_event(
+        self,
+        stream: str,
+        payload: Any,
+        *,
+        event_type: str,
+        received_at: datetime | None = None,
+        connection_id: str | None = None,
+        tags: dict[str, Any] | None = None,
+    ) -> None:
+        envelope = {
+            "received_at": (received_at or datetime.now(timezone.utc)).isoformat(),
+            "event_type": event_type,
+            "connection_id": connection_id,
             "tags": tags or {},
             "payload": json_ready(payload),
         }

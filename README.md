@@ -130,6 +130,18 @@ python -m cats_py.apps.run_websocket_gateways
 python -m cats_py.apps.run_execution_daemon
 ```
 
+### 6.4 质量检查
+```bash
+make lint
+make test
+```
+
+### 6.5 运行模式说明
+- `shadow`：读实时数据，只生成决策与日志，不提交真实订单。
+- `paper`：保留实时决策路径，但用于模拟成交与记账。
+- `live_micro`：只允许极小风险上线，当前建议仅限 `core` symbol 池。
+- `live`：当前骨架默认禁止直接启动，需在补齐状态机、保护单、告警后再开放。
+
 ## 7. 当前成熟度
 
 这版适合：

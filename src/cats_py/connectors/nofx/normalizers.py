@@ -29,6 +29,17 @@ def ai300_level_to_score(level: str | None) -> float:
     return mapping.get(level.upper(), 0.0)
 
 
+def extract_reference_price(data: dict[str, Any]) -> float:
+    for key in ("price", "mark_price", "markPrice", "last_price", "lastPrice", "close", "close_price"):
+        value = data.get(key)
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
 def build_query_rank_map(query_rank_payload: dict[str, Any]) -> dict[str, int]:
     rankings = query_rank_payload.get("data", {}).get("rankings", [])
     result: dict[str, int] = {}
@@ -87,6 +98,7 @@ def normalize_coin_snapshot(
     return FeatureVector(
         symbol=symbol,
         ts=ts,
+        reference_price=extract_reference_price(data),
         ai500_score=float(ai500.get("score", 0.0) or 0.0),
         ai300_level_score=ai300_level_score,
         price_change_15m=_to_ratio(price_change.get("15m"), already_percent_literal=False),

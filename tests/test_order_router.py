@@ -1,3 +1,4 @@
+import asyncio
 from decimal import Decimal
 
 import pytest
@@ -16,8 +17,7 @@ class DummyBinance:
         return {"data": {"orderId": "order-1", "status": "NEW", "echo": params}}
 
 
-@pytest.mark.asyncio
-async def test_order_router_uses_algo_for_conditional_orders() -> None:
+def test_order_router_uses_algo_for_conditional_orders() -> None:
     validator = PreTradeValidator(
         {
             "BTCUSDT": SymbolRule(
@@ -39,7 +39,7 @@ async def test_order_router_uses_algo_for_conditional_orders() -> None:
         close_position=True,
         client_order_id="algo-demo",
     )
-    resp = await router.place(req)
+    resp = asyncio.run(router.place(req))
     assert req.order_type in ALGO_ORDER_TYPES
     assert resp.route == "algo"
     assert resp.venue_order_id == "algo-1"

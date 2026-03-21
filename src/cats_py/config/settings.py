@@ -1,24 +1,31 @@
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
-from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class RuntimeMode(str, Enum):
+    SHADOW = "shadow"
+    PAPER = "paper"
+    LIVE_MICRO = "live_micro"
+    LIVE = "live"
+
+
 class RuntimeSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     env: str = Field(default="dev", alias="CATS_ENV")
-    mode: Literal["shadow", "paper", "live_micro", "live"] = Field(
-        default="shadow", alias="CATS_MODE"
+    mode: RuntimeMode = Field(
+        default=RuntimeMode.SHADOW, alias="CATS_MODE"
     )
     log_level: str = Field(default="INFO", alias="CATS_LOG_LEVEL")
 
     nofx_api_key: str = Field(default="", alias="NOFX_API_KEY")
-    nofx_auth_mode: Literal["bearer", "query"] = Field(default="bearer", alias="NOFX_AUTH_MODE")
+    nofx_auth_mode: str = Field(default="bearer", alias="NOFX_AUTH_MODE")
     nofx_base_url: str = Field(default="https://nofxos.ai", alias="NOFX_BASE_URL")
 
     binance_api_key: str = Field(default="", alias="BINANCE_API_KEY")
@@ -38,10 +45,14 @@ class RuntimeSettings(BaseSettings):
 
 
 class AppConfig(BaseModel):
-    mode: str = "shadow"
+    mode: RuntimeMode = RuntimeMode.SHADOW
     core_loop_interval_seconds: int = 5
     user_stream_stale_kill_seconds: int = 90
     nofx_stale_kill_seconds: int = 45
+    paper_starting_balance: float = 10_000.0
+    paper_fill_slippage_bps: float = 1.0
+    paper_taker_fee_bps: float = 4.0
+    paper_funding_interval_hours: float = 8.0
     nofx: dict[str, object] = Field(default_factory=dict)
     binance: dict[str, object] = Field(default_factory=dict)
 

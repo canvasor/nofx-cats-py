@@ -9,13 +9,17 @@ from cats_py.connectors.nofx.normalizers import (
     build_query_rank_map,
     normalize_coin_snapshot,
 )
+from cats_py.infra.logging import configure_logging
 from cats_py.infra.storage import JsonlStorage, json_ready
 from cats_py.services.universe import UniverseBuilder
 
 
 async def main() -> None:
     services = bootstrap()
-    nofx = services["nofx"]
+    logger = configure_logging("cats_py.apps.run_nofx_collector", log_level=services.runtime.log_level)
+    logger.info("service_started", extra={"mode_summary": services.mode_summary.as_dict()})
+
+    nofx = services.nofx
     storage = JsonlStorage(base_dir="data")
 
     assert hasattr(nofx, "ai500_list")
@@ -39,7 +43,10 @@ async def main() -> None:
     query_rank_map = build_query_rank_map(query_rank)
     ai300_level_map = build_ai300_level_map(ai300)
     universe = UniverseBuilder().build(ai500, ai300)
-    print("[collector] universe:", universe)
+    logger.info(
+        "universe_built",
+        extra={"symbol_count": len(universe), "symbols": universe[:10]},
+    )
 
     for symbol in universe[:10]:
         base_symbol = symbol.replace("USDT", "")
@@ -91,7 +98,14 @@ async def main() -> None:
                 "payload": json_ready(normalized),
             },
         )
-        print(f"[collector] normalized {symbol}")
+        logger.info(
+            "symbol_normalized",
+            extra={
+                "symbol": symbol,
+                "query_rank": query_rank_map.get(symbol),
+                "ai300_level_score": ai300_level_map.get(symbol, 0.0),
+            },
+        )
 
     await nofx.close()
 

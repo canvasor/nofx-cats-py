@@ -1,48 +1,70 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-
 from cats_py.app.bootstrap import bootstrap
-from cats_py.connectors.nofx.normalizers import normalize_coin_snapshot
-from cats_py.domain.models import AccountSnapshot
+from cats_py.infra.logging import configure_logging
 from cats_py.infra.storage import JsonlStorage
 from cats_py.journal.recorder import JournalRecorder
+from cats_py.services.decision_runtime import DecisionRuntimeService
+from cats_py.services.paper_execution import PaperExecutionService
+from cats_py.services.reconciliation import AccountReconciler
 
 
 async def main() -> None:
     services = bootstrap()
-    nofx = services["nofx"]
-    decision_engine = services["decision_engine"]
+    logger = configure_logging("cats_py.apps.run_decision_engine", log_level=services.runtime.log_level)
+    logger.info("service_started", extra={"mode_summary": services.mode_summary.as_dict()})
+
+    nofx = services.nofx
+    decision_engine = services.decision_engine
+    reconciler = AccountReconciler(services.binance)
     storage = JsonlStorage(base_dir="data")
     journal = JournalRecorder(storage)
-
-    symbol = "BTCUSDT"
-    coin = await nofx.coin(symbol)
-    funding = await nofx.funding_rate("BTC")
-    heatmap = await nofx.heatmap_future("BTC")
-    feature = normalize_coin_snapshot(symbol, coin, funding, heatmap)
-
-    account = AccountSnapshot(
-        equity=10_000.0,
-        daily_drawdown_pct=-0.3,
-        weekly_drawdown_pct=-1.2,
-        gross_exposure=0.25,
-        open_positions=1,
-        user_stream_stale_seconds=0.0,
+    paper_execution = None
+    if services.mode_summary.paper_execution:
+        paper_execution = PaperExecutionService(
+            journal=journal,
+            starting_balance=services.app_config.paper_starting_balance,
+            slippage_bps=services.app_config.paper_fill_slippage_bps,
+            taker_fee_bps=services.app_config.paper_taker_fee_bps,
+            funding_interval_hours=services.app_config.paper_funding_interval_hours,
+        )
+    runtime_service = DecisionRuntimeService(
+        nofx=nofx,
+        decision_engine=decision_engine,
+        reconciler=reconciler,
+        journal=journal,
+        app_config=services.app_config,
+        symbol_config=services.symbol_config,
+        mode_summary=services.mode_summary,
+        paper_execution=paper_execution,
     )
 
-    decision = decision_engine.decide(feature, account)
-    journal.record(
-        "decision_log",
-        {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "decision": decision,
-        },
-    )
-    print("[decision]", decision)
+    try:
+        while True:
+            try:
+                result = await runtime_service.run_cycle()
+            except Exception:  # noqa: BLE001
+                logger.exception("decision_cycle_failed", extra={"mode": services.mode_summary.mode.value})
+                await asyncio.sleep(services.app_config.core_loop_interval_seconds)
+                continue
 
-    await nofx.close()
+            for decision in result.decisions:
+                logger.info(
+                    "decision_evaluated",
+                    extra={
+                        "decision_id": decision.decision_id,
+                        "symbol": decision.symbol,
+                        "status": decision.status.value,
+                        "selected_strategy": decision.selected_strategy,
+                        "regime": decision.regime.value,
+                        "action_score": decision.action_score,
+                    },
+                )
+            await asyncio.sleep(services.app_config.core_loop_interval_seconds)
+    finally:
+        await nofx.close()
+        await services.binance.close()
 
 
 if __name__ == "__main__":

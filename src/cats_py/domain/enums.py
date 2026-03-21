@@ -50,3 +50,20 @@ class RiskDecisionStatus(str, Enum):
 class DecisionStatus(str, Enum):
     EXECUTE = "EXECUTE"
     NO_TRADE = "NO_TRADE"
+
+
+class OrderLifecycleStatus(str, Enum):
+    NEW = "NEW"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    CANCELED = "CANCELED"
+    EXPIRED = "EXPIRED"
+    REJECTED = "REJECTED"
+    TRIGGERED = "TRIGGERED"
+    UNKNOWN = "UNKNOWN"
+
+
+class PositionDirection(str, Enum):
+    LONG = "LONG"
+    SHORT = "SHORT"
+    FLAT = "FLAT"

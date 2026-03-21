@@ -57,6 +57,13 @@ class BinanceRestClient:
         params = {"symbol": symbol} if symbol else None
         return await self._request("GET", "/fapi/v3/positionRisk", params=params, signed=True)
 
+    async def get_account_info(self) -> dict[str, Any]:
+        return await self._request("GET", "/fapi/v3/account", signed=True)
+
+    async def get_open_orders(self, symbol: str | None = None) -> dict[str, Any]:
+        params = {"symbol": symbol} if symbol else None
+        return await self._request("GET", "/fapi/v1/openOrders", params=params, signed=True)
+
     async def get_api_trading_status(self, symbol: str | None = None) -> dict[str, Any]:
         params = {"symbol": symbol} if symbol else None
         return await self._request("GET", "/fapi/v1/apiTradingStatus", params=params, signed=True)

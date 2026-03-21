@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
@@ -22,3 +22,12 @@ class RiskPolicy:
     max_open_positions: int = 4
     min_liq_buffer_pct: float = 18.0
     max_slippage_bps_over_model: float = 12.0
+    symbol_concentration_cap: float = 0.35
+    leverage_bracket_buffer: float = 0.8
+    cluster_caps: dict[str, float] = field(
+        default_factory=lambda: {
+            "core": 0.80,
+            "liquid_alt": 0.45,
+            "experimental": 0.15,
+        }
+    )

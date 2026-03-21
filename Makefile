@@ -8,6 +8,11 @@ lint:
 test:
 	pytest -q
 
+ci:
+	ruff check src tests
+	mypy src
+	pytest -q
+
 run-nofx:
 	python -m cats_py.apps.run_nofx_collector
 
