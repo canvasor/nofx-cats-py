@@ -1,0 +1,20 @@
+mode: shadow
+core_loop_interval_seconds: 5
+user_stream_stale_kill_seconds: 90
+nofx_stale_kill_seconds: 45
+
+nofx:
+  request_timeout_seconds: 10
+  high_frequency_symbols_top_n: 10
+  collectors:
+    ai500_interval_seconds: 15
+    coin_interval_seconds: 10
+    funding_interval_seconds: 30
+    heatmap_interval_seconds: 10
+    query_rank_interval_seconds: 60
+
+binance:
+  recv_window_ms: 5000
+  user_stream_keepalive_seconds: 3300
+  auto_cancel_heartbeat_seconds: 30
+  auto_cancel_countdown_ms: 120000

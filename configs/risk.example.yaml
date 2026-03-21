@@ -1,0 +1,21 @@
+risk:
+  trade_risk_bps_default: 35
+  trade_risk_bps_max: 75
+  daily_drawdown_soft_pct: -1.5
+  daily_drawdown_hard_pct: -3.0
+  weekly_drawdown_hard_pct: -6.0
+  gross_exposure_soft: 1.25
+  gross_exposure_hard: 3.0
+  max_open_positions: 4
+  min_liq_buffer_pct: 18
+  max_slippage_bps_over_model: 12
+
+tiers:
+  core:
+    max_leverage: 3
+    max_symbol_notional_pct: 25
+  liquid_alt:
+    max_leverage: 2
+    max_symbol_notional_pct: 12
+  experimental:
+    enabled: false

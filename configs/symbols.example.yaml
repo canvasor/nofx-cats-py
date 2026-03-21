@@ -1,0 +1,12 @@
+core:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+
+liquid_alt:
+  - BNBUSDT
+  - XRPUSDT
+  - DOGEUSDT
+  - LINKUSDT
+
+experimental: []
