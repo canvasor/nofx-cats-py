@@ -130,6 +130,18 @@ python -m cats_py.apps.run_websocket_gateways
 python -m cats_py.apps.run_execution_daemon
 ```
 
+### 6.3.1 `paper` 后台运行
+```bash
+export NOFX_API_KEY='replace_with_real_key'
+./scripts/paper_runtime.sh start
+./scripts/paper_runtime.sh status
+```
+
+导出 `paper` 数据集：
+```bash
+python -m cats_py.apps.run_paper_export
+```
+
 ### 6.4 质量检查
 ```bash
 make lint
