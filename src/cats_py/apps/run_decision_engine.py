@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from cats_py.app.bootstrap import bootstrap
+from cats_py.domain.enums import DecisionStatus
 from cats_py.infra.logging import configure_logging
 from cats_py.infra.storage import JsonlStorage
 from cats_py.journal.recorder import JournalRecorder
@@ -49,9 +50,23 @@ async def main() -> None:
                 await asyncio.sleep(services.app_config.core_loop_interval_seconds)
                 continue
 
-            for decision in result.decisions:
+            execute_decisions = [decision for decision in result.decisions if decision.status == DecisionStatus.EXECUTE]
+            logger.info(
+                "decision_cycle_completed",
+                extra={
+                    "cycle_id": result.cycle_id,
+                    "mode": services.mode_summary.mode.value,
+                    "evaluated_symbols": len(result.decisions),
+                    "execute_count": len(execute_decisions),
+                    "no_trade_count": len(result.decisions) - len(execute_decisions),
+                    "nofx_api_requests": result.request_stats.api_requests,
+                    "nofx_cache_hits": result.request_stats.cache_hits,
+                },
+            )
+
+            for decision in execute_decisions:
                 logger.info(
-                    "decision_evaluated",
+                    "decision_execute_candidate",
                     extra={
                         "decision_id": decision.decision_id,
                         "symbol": decision.symbol,

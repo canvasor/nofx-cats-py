@@ -21,6 +21,7 @@ load_env() {
   fi
 
   export CATS_MODE="paper"
+  export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
   export CATS_APP_CONFIG_TEMPLATE="${CATS_APP_CONFIG_TEMPLATE:-$ROOT_DIR/configs/app.example.yaml}"
   export CATS_RISK_CONFIG="${CATS_RISK_CONFIG:-$ROOT_DIR/configs/risk.example.yaml}"
   export CATS_SYMBOLS_CONFIG="${CATS_SYMBOLS_CONFIG:-$ROOT_DIR/configs/symbols.example.yaml}"
@@ -183,6 +184,7 @@ Optional environment variables:
   PYTHON_BIN
   ENV_FILE
   NOFX_API_KEY
+  PYTHONPATH
   CATS_APP_CONFIG_TEMPLATE
   CATS_RISK_CONFIG
   CATS_SYMBOLS_CONFIG

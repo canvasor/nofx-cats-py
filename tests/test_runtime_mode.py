@@ -6,6 +6,7 @@ from cats_py.app.bootstrap import (
     LIVE_MICRO_MAX_OPEN_POSITIONS,
     LIVE_MICRO_MAX_SYMBOL_NOTIONAL_PCT,
     apply_runtime_risk_overrides,
+    build_symbol_tier_policy,
     build_runtime_mode_summary,
 )
 from cats_py.config.settings import AppConfig, RuntimeMode, RuntimeSettings, SymbolConfig
@@ -101,3 +102,11 @@ def test_apply_runtime_risk_overrides_tightens_live_micro_caps() -> None:
     assert runtime_tiers[SymbolTier.CORE].max_symbol_notional_pct == LIVE_MICRO_MAX_SYMBOL_NOTIONAL_PCT
     assert runtime_tiers[SymbolTier.LIQUID_ALT].enabled is False
     assert runtime_tiers[SymbolTier.EXPERIMENTAL].enabled is False
+
+
+def test_build_symbol_tier_policy_backfills_missing_experimental_defaults() -> None:
+    policy = build_symbol_tier_policy({"enabled": False}, enabled=False, max_leverage=1.0, max_symbol_notional_pct=0.0)
+
+    assert policy.enabled is False
+    assert policy.max_leverage == 1.0
+    assert policy.max_symbol_notional_pct == 0.0

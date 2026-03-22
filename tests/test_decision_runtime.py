@@ -12,8 +12,12 @@ class DummyNofx:
     def __init__(self, *, timestamp_ms: int | None = None) -> None:
         self.requested_symbols: list[str] = []
         self.timestamp_ms = timestamp_ms or int(datetime.now(timezone.utc).timestamp() * 1000)
+        self.coin_calls = 0
+        self.funding_calls = 0
+        self.heatmap_calls = 0
 
     async def coin(self, symbol: str) -> dict[str, object]:
+        self.coin_calls += 1
         self.requested_symbols.append(symbol)
         return {
             "data": {
@@ -33,9 +37,11 @@ class DummyNofx:
         }
 
     async def funding_rate(self, symbol: str) -> dict[str, object]:
+        self.funding_calls += 1
         return {"data": {"funding_rate": 0.2, "timestamp": self.timestamp_ms}}
 
     async def heatmap_future(self, symbol: str) -> dict[str, object]:
+        self.heatmap_calls += 1
         return {"data": {"heatmap": {"delta": 1000, "timestamp": self.timestamp_ms}}}
 
 
@@ -107,7 +113,18 @@ def make_mode_summary(mode: RuntimeMode) -> RuntimeModeSummary:
 
 
 def make_app_config() -> AppConfig:
-    return AppConfig(mode=RuntimeMode.SHADOW, core_loop_interval_seconds=1, nofx_stale_kill_seconds=45)
+    return AppConfig(
+        mode=RuntimeMode.SHADOW,
+        core_loop_interval_seconds=1,
+        nofx_stale_kill_seconds=45,
+        nofx={
+            "collectors": {
+                "coin_interval_seconds": 30,
+                "funding_interval_seconds": 30,
+                "heatmap_interval_seconds": 30,
+            }
+        },
+    )
 
 
 def test_decision_runtime_limits_symbols_in_live_micro() -> None:
@@ -194,3 +211,26 @@ def test_decision_runtime_blocks_stale_nofx_feature_before_strategy_eval() -> No
     assert result.decisions[0].status == DecisionStatus.NO_TRADE
     assert result.decisions[0].regime == MarketRegime.DEFENSE
     assert "nofx feature stale" in result.decisions[0].rationale
+
+
+def test_decision_runtime_reuses_cached_nofx_payloads_between_cycles() -> None:
+    nofx = DummyNofx()
+    service = DecisionRuntimeService(
+        nofx=nofx,
+        decision_engine=DummyDecisionEngine(),
+        reconciler=DummyReconciler(AccountState()),
+        journal=MemoryJournal(),  # type: ignore[arg-type]
+        app_config=make_app_config(),
+        symbol_config=SymbolConfig(core=["BTCUSDT"], liquid_alt=[], experimental=[]),
+        mode_summary=make_mode_summary(RuntimeMode.SHADOW),
+    )
+
+    first = asyncio.run(service.run_cycle())
+    second = asyncio.run(service.run_cycle())
+
+    assert first.request_stats.api_requests == 3
+    assert second.request_stats.api_requests == 0
+    assert second.request_stats.cache_hits == 3
+    assert nofx.coin_calls == 1
+    assert nofx.funding_calls == 1
+    assert nofx.heatmap_calls == 1

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import uuid
 
@@ -16,9 +16,23 @@ from cats_py.services.reconciliation import AccountReconciler
 
 
 @dataclass(slots=True)
+class NofxRequestStats:
+    api_requests: int = 0
+    cache_hits: int = 0
+
+
+@dataclass(slots=True)
+class CachedPayload:
+    payload: dict[str, object]
+    fetched_at: datetime
+
+
+@dataclass(slots=True)
 class DecisionRuntimeResult:
+    cycle_id: str
     account_state: AccountState
     decisions: list[TradeDecision]
+    request_stats: NofxRequestStats = field(default_factory=NofxRequestStats)
 
 
 class DecisionRuntimeService:
@@ -42,6 +56,11 @@ class DecisionRuntimeService:
         self.symbol_config = symbol_config
         self.mode_summary = mode_summary
         self.paper_execution = paper_execution
+        self.response_cache: dict[tuple[str, str], CachedPayload] = {}
+        collectors = app_config.nofx.get("collectors", {}) if isinstance(app_config.nofx, dict) else {}
+        self.coin_ttl_seconds = int(collectors.get("coin_interval_seconds", app_config.core_loop_interval_seconds))
+        self.funding_ttl_seconds = int(collectors.get("funding_interval_seconds", app_config.core_loop_interval_seconds))
+        self.heatmap_ttl_seconds = int(collectors.get("heatmap_interval_seconds", app_config.core_loop_interval_seconds))
 
     def configured_symbols(self) -> list[str]:
         if self.mode_summary.mode == RuntimeMode.LIVE_MICRO:
@@ -73,11 +92,12 @@ class DecisionRuntimeService:
     async def run_cycle(self) -> DecisionRuntimeResult:
         cycle_started_at = datetime.now(timezone.utc)
         cycle_id = str(uuid.uuid4())
+        request_stats = NofxRequestStats()
         features: dict[str, FeatureVector] = {}
         symbol_sources = self.symbol_sources()
         for symbol in self.configured_symbols():
             try:
-                features[symbol] = await self._build_feature(symbol, now=cycle_started_at)
+                features[symbol] = await self._build_feature(symbol, now=cycle_started_at, request_stats=request_stats)
             except Exception as exc:  # noqa: BLE001
                 self.journal.record(
                     "decision_cycle_error",
@@ -141,17 +161,71 @@ class DecisionRuntimeService:
                 account_state = self.paper_execution.account_state(now=cycle_started_at)
                 account_snapshot = account_state.to_snapshot(now=cycle_started_at)
 
-        return DecisionRuntimeResult(account_state=account_state, decisions=decisions)
+        return DecisionRuntimeResult(
+            cycle_id=cycle_id,
+            account_state=account_state,
+            decisions=decisions,
+            request_stats=request_stats,
+        )
 
-    async def _build_feature(self, symbol: str, *, now: datetime | None = None) -> FeatureVector:
+    async def _build_feature(
+        self,
+        symbol: str,
+        *,
+        now: datetime | None = None,
+        request_stats: NofxRequestStats | None = None,
+    ) -> FeatureVector:
         base_symbol = symbol.replace("USDT", "")
-        coin = await self.nofx.coin(symbol)
-        funding = await self.nofx.funding_rate(base_symbol)
-        heatmap = await self.nofx.heatmap_future(base_symbol)
+        coin = await self._get_cached_payload(
+            endpoint="coin",
+            key=symbol,
+            ttl_seconds=self.coin_ttl_seconds,
+            fetcher=lambda: self.nofx.coin(symbol),
+            request_stats=request_stats,
+        )
+        funding = await self._get_cached_payload(
+            endpoint="funding_rate",
+            key=base_symbol,
+            ttl_seconds=self.funding_ttl_seconds,
+            fetcher=lambda: self.nofx.funding_rate(base_symbol),
+            request_stats=request_stats,
+        )
+        heatmap = await self._get_cached_payload(
+            endpoint="heatmap_future",
+            key=base_symbol,
+            ttl_seconds=self.heatmap_ttl_seconds,
+            fetcher=lambda: self.nofx.heatmap_future(base_symbol),
+            request_stats=request_stats,
+        )
         feature = normalize_coin_snapshot(symbol, coin, funding, heatmap)
         reference_time = now or datetime.now(timezone.utc)
         feature.stale_seconds = max((reference_time - feature.ts).total_seconds(), 0.0)
         return feature
+
+    async def _get_cached_payload(
+        self,
+        *,
+        endpoint: str,
+        key: str,
+        ttl_seconds: int,
+        fetcher,
+        request_stats: NofxRequestStats | None,
+    ) -> dict[str, object]:
+        cache_key = (endpoint, key)
+        cached = self.response_cache.get(cache_key)
+        now = datetime.now(timezone.utc)
+        if cached is not None and max(ttl_seconds, 0) > 0:
+            age_seconds = (now - cached.fetched_at).total_seconds()
+            if age_seconds < ttl_seconds:
+                if request_stats is not None:
+                    request_stats.cache_hits += 1
+                return cached.payload
+
+        payload = await fetcher()
+        self.response_cache[cache_key] = CachedPayload(payload=payload, fetched_at=now)
+        if request_stats is not None:
+            request_stats.api_requests += 1
+        return payload
 
     def _build_order_request_preview(self, decision: TradeDecision) -> dict[str, object] | None:
         if decision.status != DecisionStatus.EXECUTE or decision.side is None or decision.risk is None:

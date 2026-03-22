@@ -1,17 +1,21 @@
 mode: shadow
-core_loop_interval_seconds: 5
+core_loop_interval_seconds: 20
 user_stream_stale_kill_seconds: 90
-nofx_stale_kill_seconds: 45
+nofx_stale_kill_seconds: 120
+paper_starting_balance: 10000
+paper_fill_slippage_bps: 2.0
+paper_taker_fee_bps: 4.0
+paper_funding_interval_hours: 8.0
 
 nofx:
   request_timeout_seconds: 10
   high_frequency_symbols_top_n: 10
   collectors:
-    ai500_interval_seconds: 15
-    coin_interval_seconds: 10
-    funding_interval_seconds: 30
-    heatmap_interval_seconds: 10
-    query_rank_interval_seconds: 60
+    ai500_interval_seconds: 60
+    coin_interval_seconds: 30
+    funding_interval_seconds: 180
+    heatmap_interval_seconds: 30
+    query_rank_interval_seconds: 300
 
 binance:
   recv_window_ms: 5000

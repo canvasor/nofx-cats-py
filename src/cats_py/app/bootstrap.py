@@ -63,6 +63,22 @@ class ServiceContainer:
     decision_engine: DecisionEngine
 
 
+def build_symbol_tier_policy(
+    payload: dict[str, object] | None,
+    *,
+    enabled: bool = True,
+    max_leverage: float = 1.0,
+    max_symbol_notional_pct: float = 0.0,
+) -> SymbolTierPolicy:
+    values = {
+        "enabled": enabled,
+        "max_leverage": max_leverage,
+        "max_symbol_notional_pct": max_symbol_notional_pct,
+    }
+    values.update(payload or {})
+    return SymbolTierPolicy(**values)
+
+
 def apply_runtime_risk_overrides(
     policy: RiskPolicy,
     tier_policies: dict[SymbolTier, SymbolTierPolicy],
@@ -192,9 +208,24 @@ def bootstrap() -> ServiceContainer:
 
     risk = RiskPolicy(**risk_config.risk)
     tier_policies = {
-        SymbolTier.CORE: SymbolTierPolicy(**risk_config.tiers.get("core", {})),
-        SymbolTier.LIQUID_ALT: SymbolTierPolicy(**risk_config.tiers.get("liquid_alt", {})),
-        SymbolTier.EXPERIMENTAL: SymbolTierPolicy(**risk_config.tiers.get("experimental", {"enabled": False})),
+        SymbolTier.CORE: build_symbol_tier_policy(
+            risk_config.tiers.get("core", {}),
+            enabled=True,
+            max_leverage=1.0,
+            max_symbol_notional_pct=0.0,
+        ),
+        SymbolTier.LIQUID_ALT: build_symbol_tier_policy(
+            risk_config.tiers.get("liquid_alt", {}),
+            enabled=True,
+            max_leverage=1.0,
+            max_symbol_notional_pct=0.0,
+        ),
+        SymbolTier.EXPERIMENTAL: build_symbol_tier_policy(
+            risk_config.tiers.get("experimental", {}),
+            enabled=False,
+            max_leverage=1.0,
+            max_symbol_notional_pct=0.0,
+        ),
     }
     risk, tier_policies = apply_runtime_risk_overrides(risk, tier_policies, runtime.mode)
     symbol_tiers = {symbol: SymbolTier.CORE for symbol in symbol_config.core}
