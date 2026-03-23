@@ -30,6 +30,15 @@ async def main() -> None:
             taker_fee_bps=services.app_config.paper_taker_fee_bps,
             funding_interval_hours=services.app_config.paper_funding_interval_hours,
         )
+        logger.info(
+            "paper_runtime_initialized",
+            extra={
+                "starting_balance": services.app_config.paper_starting_balance,
+                "slippage_bps": services.app_config.paper_fill_slippage_bps,
+                "taker_fee_bps": services.app_config.paper_taker_fee_bps,
+                "funding_interval_hours": services.app_config.paper_funding_interval_hours,
+            },
+        )
     runtime_service = DecisionRuntimeService(
         nofx=nofx,
         decision_engine=decision_engine,
@@ -51,6 +60,7 @@ async def main() -> None:
                 continue
 
             execute_decisions = [decision for decision in result.decisions if decision.status == DecisionStatus.EXECUTE]
+            account_snapshot = result.account_state.to_snapshot()
             logger.info(
                 "decision_cycle_completed",
                 extra={
@@ -61,6 +71,9 @@ async def main() -> None:
                     "no_trade_count": len(result.decisions) - len(execute_decisions),
                     "nofx_api_requests": result.request_stats.api_requests,
                     "nofx_cache_hits": result.request_stats.cache_hits,
+                    "paper_equity": account_snapshot.equity if services.mode_summary.paper_execution else None,
+                    "paper_gross_exposure": account_snapshot.gross_exposure if services.mode_summary.paper_execution else None,
+                    "paper_open_positions": account_snapshot.open_positions if services.mode_summary.paper_execution else None,
                 },
             )
 
@@ -71,9 +84,12 @@ async def main() -> None:
                         "decision_id": decision.decision_id,
                         "symbol": decision.symbol,
                         "status": decision.status.value,
+                        "side": decision.side.value if decision.side is not None else None,
                         "selected_strategy": decision.selected_strategy,
                         "regime": decision.regime.value,
                         "action_score": decision.action_score,
+                        "approved_notional": decision.risk.approved_notional if decision.risk is not None else None,
+                        "approved_leverage": decision.risk.approved_leverage if decision.risk is not None else None,
                     },
                 )
             await asyncio.sleep(services.app_config.core_loop_interval_seconds)

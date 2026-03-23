@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from cats_py.connectors.nofx.normalizers import normalize_coin_snapshot
 
 
@@ -26,3 +28,19 @@ def test_nofx_percent_literals_become_ratio() -> None:
     assert feature.oi_binance_1h == 0.05
     assert feature.oi_bybit_1h == 0.02
     assert feature.funding_rate == 0.005
+
+
+def test_nofx_feature_timestamp_uses_freshest_available_source() -> None:
+    feature = normalize_coin_snapshot(
+        symbol="BTCUSDT",
+        coin_payload={
+            "data": {
+                "timestamp": 1_800_000_000_000,
+                "price": 42000,
+            }
+        },
+        funding_payload={"data": {"funding_rate": 0.5, "timestamp": 1_770_000_000_000}},
+        heatmap_payload={"data": {"heatmap": {"delta": 12345, "timestamp": 1_790_000_000_000}}},
+    )
+
+    assert feature.ts == datetime.fromtimestamp(1_800_000_000, tz=timezone.utc)

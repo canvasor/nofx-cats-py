@@ -38,6 +38,18 @@ ALGO_ORDER_TYPES = {
 }
 
 
+def decimal_or_default(value: Any, default: str) -> Decimal:
+    if value is None or value == "":
+        return Decimal(default)
+    return Decimal(str(value))
+
+
+def optional_decimal(value: Any) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    return Decimal(str(value))
+
+
 def floor_to_step(value: Decimal, step: Decimal) -> Decimal:
     if step <= 0:
         raise ValueError("step must be > 0")
@@ -135,11 +147,13 @@ class PreTradeValidator:
         for item in symbols:
             if not isinstance(item, dict):
                 continue
-            symbol = item["symbol"]
+            symbol = item.get("symbol")
+            if not isinstance(symbol, str):
+                continue
             filters = {f["filterType"]: f for f in item.get("filters", []) if isinstance(f, dict)}
             bracket = bracket_map.get(symbol, {})
             bracket_list = bracket.get("brackets", [])
-            first_bracket = bracket_list[0] if bracket_list else {}
+            first_bracket = bracket_list[0] if bracket_list and isinstance(bracket_list[0], dict) else {}
 
             min_notional_raw = filters.get("MIN_NOTIONAL", {}).get("notional", "0")
             lot_size = filters.get("LOT_SIZE", {})
@@ -149,21 +163,21 @@ class PreTradeValidator:
 
             rules[symbol] = SymbolRule(
                 symbol=symbol,
-                tick_size=Decimal(price_filter.get("tickSize", "0.0001")),
-                step_size=Decimal(lot_size.get("stepSize", "0.001")),
-                min_qty=Decimal(lot_size.get("minQty", "0")),
-                min_notional=Decimal(str(min_notional_raw)),
-                market_step_size=Decimal(market_lot_size.get("stepSize", lot_size.get("stepSize", "0.001"))),
-                market_min_qty=Decimal(market_lot_size.get("minQty", lot_size.get("minQty", "0"))),
-                market_max_qty=Decimal(market_lot_size.get("maxQty", "0")) if market_lot_size else None,
-                min_price=Decimal(price_filter.get("minPrice", "0")),
-                max_price=Decimal(price_filter.get("maxPrice", "0")) if price_filter.get("maxPrice") else None,
-                percent_price_up=Decimal(percent_price.get("multiplierUp", "0")) if percent_price else None,
-                percent_price_down=Decimal(percent_price.get("multiplierDown", "0")) if percent_price else None,
-                market_take_bound=Decimal(str(item["marketTakeBound"])) if "marketTakeBound" in item else None,
-                trigger_protect=Decimal(str(item["triggerProtect"])) if "triggerProtect" in item else None,
+                tick_size=decimal_or_default(price_filter.get("tickSize"), "0.0001"),
+                step_size=decimal_or_default(lot_size.get("stepSize"), "0.001"),
+                min_qty=decimal_or_default(lot_size.get("minQty"), "0"),
+                min_notional=decimal_or_default(min_notional_raw, "0"),
+                market_step_size=decimal_or_default(market_lot_size.get("stepSize", lot_size.get("stepSize")), "0.001"),
+                market_min_qty=decimal_or_default(market_lot_size.get("minQty", lot_size.get("minQty")), "0"),
+                market_max_qty=optional_decimal(market_lot_size.get("maxQty")) if market_lot_size else None,
+                min_price=decimal_or_default(price_filter.get("minPrice"), "0"),
+                max_price=optional_decimal(price_filter.get("maxPrice")),
+                percent_price_up=optional_decimal(percent_price.get("multiplierUp")) if percent_price else None,
+                percent_price_down=optional_decimal(percent_price.get("multiplierDown")) if percent_price else None,
+                market_take_bound=optional_decimal(item.get("marketTakeBound")),
+                trigger_protect=optional_decimal(item.get("triggerProtect")),
                 max_initial_leverage=float(first_bracket.get("initialLeverage", 1.0)),
-                max_notional_cap=Decimal(str(first_bracket.get("notionalCap", "0"))) if first_bracket else None,
+                max_notional_cap=optional_decimal(first_bracket.get("notionalCap")) if first_bracket else None,
                 status=str(item.get("status", "TRADING")),
             )
         return rules

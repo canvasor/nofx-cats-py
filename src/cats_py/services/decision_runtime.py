@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Protocol
 import uuid
 
 from cats_py.app.bootstrap import RuntimeModeSummary
 from cats_py.config.settings import AppConfig, RuntimeMode, SymbolConfig
 from cats_py.connectors.nofx.normalizers import normalize_coin_snapshot
 from cats_py.domain.enums import DecisionStatus, MarketRegime, OrderType
-from cats_py.domain.models import AccountState, FeatureVector, TradeDecision
+from cats_py.domain.models import AccountSnapshot, AccountState, FeatureVector, TradeDecision
 from cats_py.journal.recorder import JournalRecorder
 from cats_py.services.decision_engine import DecisionEngine
 from cats_py.services.paper_execution import PaperExecutionService
@@ -35,11 +37,40 @@ class DecisionRuntimeResult:
     request_stats: NofxRequestStats = field(default_factory=NofxRequestStats)
 
 
+class NofxClientProtocol(Protocol):
+    async def coin(self, symbol: str) -> dict[str, object]: ...
+
+    async def funding_rate(self, symbol: str) -> dict[str, object]: ...
+
+    async def heatmap_future(self, symbol: str) -> dict[str, object]: ...
+
+
+def _object_mapping(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): item for key, item in value.items()}
+
+
+def _int_config(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return default
+    return default
+
+
 class DecisionRuntimeService:
     def __init__(
         self,
         *,
-        nofx,
+        nofx: NofxClientProtocol,
         decision_engine: DecisionEngine,
         reconciler: AccountReconciler,
         journal: JournalRecorder,
@@ -57,10 +88,16 @@ class DecisionRuntimeService:
         self.mode_summary = mode_summary
         self.paper_execution = paper_execution
         self.response_cache: dict[tuple[str, str], CachedPayload] = {}
-        collectors = app_config.nofx.get("collectors", {}) if isinstance(app_config.nofx, dict) else {}
-        self.coin_ttl_seconds = int(collectors.get("coin_interval_seconds", app_config.core_loop_interval_seconds))
-        self.funding_ttl_seconds = int(collectors.get("funding_interval_seconds", app_config.core_loop_interval_seconds))
-        self.heatmap_ttl_seconds = int(collectors.get("heatmap_interval_seconds", app_config.core_loop_interval_seconds))
+        collectors = _object_mapping(app_config.nofx.get("collectors", {}))
+        self.coin_ttl_seconds = _int_config(
+            collectors.get("coin_interval_seconds"), app_config.core_loop_interval_seconds
+        )
+        self.funding_ttl_seconds = _int_config(
+            collectors.get("funding_interval_seconds"), app_config.core_loop_interval_seconds
+        )
+        self.heatmap_ttl_seconds = _int_config(
+            collectors.get("heatmap_interval_seconds"), app_config.core_loop_interval_seconds
+        )
 
     def configured_symbols(self) -> list[str]:
         if self.mode_summary.mode == RuntimeMode.LIVE_MICRO:
@@ -208,7 +245,7 @@ class DecisionRuntimeService:
         endpoint: str,
         key: str,
         ttl_seconds: int,
-        fetcher,
+        fetcher: Callable[[], Awaitable[dict[str, object]]],
         request_stats: NofxRequestStats | None,
     ) -> dict[str, object]:
         cache_key = (endpoint, key)
@@ -231,7 +268,7 @@ class DecisionRuntimeService:
         if decision.status != DecisionStatus.EXECUTE or decision.side is None or decision.risk is None:
             return None
 
-        preview = {
+        preview: dict[str, object] = {
             "symbol": decision.symbol,
             "side": decision.side.value,
             "order_type": OrderType.MARKET.value,
@@ -252,7 +289,7 @@ class DecisionRuntimeService:
         symbol_source: str,
         feature: FeatureVector,
         decision: TradeDecision,
-        account_snapshot,
+        account_snapshot: AccountSnapshot,
         order_request_preview: dict[str, object] | None,
     ) -> dict[str, object]:
         risk_payload = None

@@ -5,7 +5,7 @@ import logging
 import sys
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TextIO, cast
 
 
 _RESERVED_RECORD_FIELDS = {
@@ -35,7 +35,7 @@ _RESERVED_RECORD_FIELDS = {
 
 def _serialize_log_value(value: Any) -> Any:
     if is_dataclass(value):
-        return _serialize_log_value(asdict(value))
+        return _serialize_log_value(asdict(cast(Any, value)))
     if isinstance(value, dict):
         return {str(key): _serialize_log_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
@@ -74,7 +74,7 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
-class JsonStreamHandler(logging.StreamHandler[object]):
+class JsonStreamHandler(logging.StreamHandler[TextIO]):
     pass
 
 
@@ -87,6 +87,8 @@ def configure_logging(service: str, log_level: str = "INFO") -> logging.Logger:
         root.handlers = [handler]
 
     root.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     logger = logging.getLogger(service)
     logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
     return logger

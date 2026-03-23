@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
+from typing import Any, Protocol
 
 from cats_py.app.bootstrap import bootstrap
 from cats_py.connectors.binance.user_stream import UserStreamSession
+from cats_py.connectors.binance.ws_base import ConnectHook, DisconnectHook
 from cats_py.connectors.binance.ws_market import BinanceMarketStream
 from cats_py.connectors.binance.ws_private import BinancePrivateStream
 from cats_py.connectors.binance.ws_public import BinancePublicStream
 from cats_py.domain.models import AccountState, OrderState
-from cats_py.execution.guardian import PositionGuardian
+from cats_py.execution.guardian import PositionGuardian, ProtectionAlert
 from cats_py.infra.logging import configure_logging
 from cats_py.infra.storage import JsonlStorage
 from cats_py.services.reconciliation import AccountReconciler
@@ -17,17 +20,26 @@ from cats_py.services.recovery import UserStreamRecoveryCoordinator
 from cats_py.services.user_state import BinanceUserEventHandler
 
 
+class MessageStream(Protocol):
+    def messages(
+        self,
+        *,
+        on_connect: ConnectHook | None = None,
+        on_disconnect: DisconnectHook | None = None,
+    ) -> AsyncIterator[dict[str, Any]]: ...
+
+
 async def consume(
     name: str,
-    stream,
+    stream: MessageStream,
     storage: JsonlStorage,
     logger: logging.Logger,
     *,
     user_handler: BinanceUserEventHandler | None = None,
     guardian: PositionGuardian | None = None,
     connection_id: str | None = None,
-    on_connect=None,
-    on_disconnect=None,
+    on_connect: ConnectHook | None = None,
+    on_disconnect: DisconnectHook | None = None,
 ) -> None:
     count = 0
     async for message in stream.messages(on_connect=on_connect, on_disconnect=on_disconnect):
@@ -135,7 +147,7 @@ def _collect_guardian_alerts(
     account_state: AccountState,
     event_type: str,
     message: dict[str, object],
-) -> list:
+) -> list[ProtectionAlert]:
     if guardian is None:
         return []
 

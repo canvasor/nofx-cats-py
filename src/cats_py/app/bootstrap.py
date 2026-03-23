@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from typing import Final
 
@@ -63,20 +64,94 @@ class ServiceContainer:
     decision_engine: DecisionEngine
 
 
+def _object_mapping(value: object | None) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): item for key, item in value.items()}
+
+
+def _float_value(value: object, default: float) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _int_value(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return default
+    return default
+
+
 def build_symbol_tier_policy(
-    payload: dict[str, object] | None,
+    payload: Mapping[str, object] | None,
     *,
     enabled: bool = True,
     max_leverage: float = 1.0,
     max_symbol_notional_pct: float = 0.0,
 ) -> SymbolTierPolicy:
-    values = {
+    values: dict[str, object] = {
         "enabled": enabled,
         "max_leverage": max_leverage,
         "max_symbol_notional_pct": max_symbol_notional_pct,
     }
     values.update(payload or {})
-    return SymbolTierPolicy(**values)
+    return SymbolTierPolicy(
+        enabled=bool(values["enabled"]),
+        max_leverage=_float_value(values["max_leverage"], max_leverage),
+        max_symbol_notional_pct=_float_value(values["max_symbol_notional_pct"], max_symbol_notional_pct),
+    )
+
+
+def build_risk_policy(payload: Mapping[str, object] | None) -> RiskPolicy:
+    defaults = RiskPolicy()
+    values = _object_mapping(payload)
+    cluster_caps_raw = _object_mapping(values.get("cluster_caps"))
+    cluster_caps = {
+        key: _float_value(raw_value, defaults.cluster_caps.get(key, 0.0))
+        for key, raw_value in cluster_caps_raw.items()
+    }
+    if not cluster_caps:
+        cluster_caps = dict(defaults.cluster_caps)
+
+    return RiskPolicy(
+        trade_risk_bps_default=_float_value(values.get("trade_risk_bps_default"), defaults.trade_risk_bps_default),
+        trade_risk_bps_max=_float_value(values.get("trade_risk_bps_max"), defaults.trade_risk_bps_max),
+        daily_drawdown_soft_pct=_float_value(values.get("daily_drawdown_soft_pct"), defaults.daily_drawdown_soft_pct),
+        daily_drawdown_hard_pct=_float_value(values.get("daily_drawdown_hard_pct"), defaults.daily_drawdown_hard_pct),
+        weekly_drawdown_hard_pct=_float_value(
+            values.get("weekly_drawdown_hard_pct"), defaults.weekly_drawdown_hard_pct
+        ),
+        gross_exposure_soft=_float_value(values.get("gross_exposure_soft"), defaults.gross_exposure_soft),
+        gross_exposure_hard=_float_value(values.get("gross_exposure_hard"), defaults.gross_exposure_hard),
+        max_open_positions=_int_value(values.get("max_open_positions"), defaults.max_open_positions),
+        min_liq_buffer_pct=_float_value(values.get("min_liq_buffer_pct"), defaults.min_liq_buffer_pct),
+        max_slippage_bps_over_model=_float_value(
+            values.get("max_slippage_bps_over_model"), defaults.max_slippage_bps_over_model
+        ),
+        symbol_concentration_cap=_float_value(
+            values.get("symbol_concentration_cap"), defaults.symbol_concentration_cap
+        ),
+        leverage_bracket_buffer=_float_value(
+            values.get("leverage_bracket_buffer"), defaults.leverage_bracket_buffer
+        ),
+        cluster_caps=cluster_caps,
+    )
 
 
 def apply_runtime_risk_overrides(
@@ -153,7 +228,7 @@ def build_runtime_mode_summary(
     if runtime.mode == RuntimeMode.SHADOW:
         live_order_submission = False
         paper_execution = False
-        allowed_symbol_tiers = (
+        allowed_symbol_tiers: tuple[str, ...] = (
             SymbolTier.CORE.value,
             SymbolTier.LIQUID_ALT.value,
             SymbolTier.EXPERIMENTAL.value,
@@ -206,22 +281,22 @@ def bootstrap() -> ServiceContainer:
         base_url=runtime.binance_rest_base_url,
     )
 
-    risk = RiskPolicy(**risk_config.risk)
+    risk = build_risk_policy(_object_mapping(risk_config.risk))
     tier_policies = {
         SymbolTier.CORE: build_symbol_tier_policy(
-            risk_config.tiers.get("core", {}),
+            _object_mapping(risk_config.tiers.get("core")),
             enabled=True,
             max_leverage=1.0,
             max_symbol_notional_pct=0.0,
         ),
         SymbolTier.LIQUID_ALT: build_symbol_tier_policy(
-            risk_config.tiers.get("liquid_alt", {}),
+            _object_mapping(risk_config.tiers.get("liquid_alt")),
             enabled=True,
             max_leverage=1.0,
             max_symbol_notional_pct=0.0,
         ),
         SymbolTier.EXPERIMENTAL: build_symbol_tier_policy(
-            risk_config.tiers.get("experimental", {}),
+            _object_mapping(risk_config.tiers.get("experimental")),
             enabled=False,
             max_leverage=1.0,
             max_symbol_notional_pct=0.0,

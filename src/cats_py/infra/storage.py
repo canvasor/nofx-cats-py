@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, cast
 
 
 class JsonlStorage:
@@ -85,7 +85,7 @@ class JsonlStorage:
 
 def json_ready(value: Any) -> Any:
     if is_dataclass(value):
-        return json_ready(asdict(value))
+        return json_ready(asdict(cast(Any, value)))
     if isinstance(value, dict):
         return {str(k): json_ready(v) for k, v in value.items()}
     if isinstance(value, list):

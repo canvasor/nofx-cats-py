@@ -22,6 +22,13 @@ def normalize_timestamp(ts: int | float | None) -> datetime:
     return datetime.fromtimestamp(ts_float, tz=timezone.utc)
 
 
+def latest_available_timestamp(*timestamps: int | float | None) -> datetime:
+    normalized = [normalize_timestamp(ts) for ts in timestamps if ts is not None]
+    if not normalized:
+        return datetime.now(timezone.utc)
+    return max(normalized)
+
+
 def ai300_level_to_score(level: str | None) -> float:
     mapping = {"A": 1.0, "B": 0.75, "C": 0.5, "D": 0.25}
     if level is None:
@@ -88,11 +95,10 @@ def normalize_coin_snapshot(
     heatmap_data = (heatmap_payload or {}).get("data", {}).get("heatmap", {})
     ai500 = data.get("ai500", {})
 
-    ts = normalize_timestamp(
-        funding_data.get("timestamp")
-        or heatmap_data.get("timestamp")
-        or data.get("timestamp")
-        or datetime.now(timezone.utc).timestamp()
+    ts = latest_available_timestamp(
+        data.get("timestamp"),
+        funding_data.get("timestamp"),
+        heatmap_data.get("timestamp"),
     )
 
     return FeatureVector(
