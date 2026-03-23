@@ -26,6 +26,7 @@ def utc_now() -> datetime:
 class FeatureVector:
     symbol: str
     ts: datetime
+    source_ts: datetime | None = None
     reference_price: float = 0.0
     ai500_score: float = 0.0
     ai300_level_score: float = 0.0
@@ -42,6 +43,7 @@ class FeatureVector:
     heatmap_delta: float = 0.0
     query_rank: int | None = None
     stale_seconds: float = 0.0
+    source_lag_seconds: float = 0.0
     trend_score: float = 0.0
     flow_score: float = 0.0
     oi_score: float = 0.0

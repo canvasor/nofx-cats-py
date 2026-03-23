@@ -1,11 +1,11 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from cats_py.app.bootstrap import RuntimeModeSummary
 from cats_py.config.settings import AppConfig, RuntimeMode, SymbolConfig
 from cats_py.domain.enums import DecisionStatus, MarketRegime, RiskDecisionStatus, Side, SymbolTier
 from cats_py.domain.models import AccountState, BalanceState, RiskDecision, TradeDecision
-from cats_py.services.decision_runtime import DecisionRuntimeService
+from cats_py.services.decision_runtime import CachedPayload, DecisionRuntimeService
 
 
 class DummyNofx:
@@ -204,6 +204,49 @@ def test_decision_runtime_blocks_stale_nofx_feature_before_strategy_eval() -> No
         app_config=make_app_config(),
         symbol_config=SymbolConfig(core=["BTCUSDT"], liquid_alt=[], experimental=[]),
         mode_summary=make_mode_summary(RuntimeMode.SHADOW),
+    )
+
+    result = asyncio.run(service.run_cycle())
+
+    assert result.decisions[0].status == DecisionStatus.NO_TRADE
+    assert result.decisions[0].rationale == ["test"]
+    entry = journal.entries[0][1]
+    assert entry["source_lag_seconds"] > 60
+    assert entry["feature_stale_seconds"] < 5
+
+
+def test_decision_runtime_blocks_when_cached_fetch_is_stale() -> None:
+    recent_timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    journal = MemoryJournal()
+    app_config = make_app_config()
+    app_config.nofx_stale_kill_seconds = 45
+    app_config.nofx["collectors"] = {
+        "coin_interval_seconds": 3600,
+        "funding_interval_seconds": 3600,
+        "heatmap_interval_seconds": 3600,
+    }
+    nofx = DummyNofx(timestamp_ms=recent_timestamp_ms)
+    service = DecisionRuntimeService(
+        nofx=nofx,
+        decision_engine=DummyDecisionEngine(),
+        reconciler=DummyReconciler(AccountState()),
+        journal=journal,  # type: ignore[arg-type]
+        app_config=app_config,
+        symbol_config=SymbolConfig(core=["BTCUSDT"], liquid_alt=[], experimental=[]),
+        mode_summary=make_mode_summary(RuntimeMode.SHADOW),
+    )
+    stale_fetch = datetime.now(timezone.utc) - timedelta(seconds=90)
+    service.response_cache[("coin", "BTCUSDT")] = CachedPayload(
+        payload=asyncio.run(nofx.coin("BTCUSDT")),
+        fetched_at=stale_fetch,
+    )
+    service.response_cache[("funding_rate", "BTC")] = CachedPayload(
+        payload=asyncio.run(nofx.funding_rate("BTC")),
+        fetched_at=stale_fetch,
+    )
+    service.response_cache[("heatmap_future", "BTC")] = CachedPayload(
+        payload=asyncio.run(nofx.heatmap_future("BTC")),
+        fetched_at=stale_fetch,
     )
 
     result = asyncio.run(service.run_cycle())

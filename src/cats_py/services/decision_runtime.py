@@ -234,9 +234,14 @@ class DecisionRuntimeService:
             fetcher=lambda: self.nofx.heatmap_future(base_symbol),
             request_stats=request_stats,
         )
-        feature = normalize_coin_snapshot(symbol, coin, funding, heatmap)
+        feature = normalize_coin_snapshot(symbol, coin.payload, funding.payload, heatmap.payload)
         reference_time = now or datetime.now(timezone.utc)
-        feature.stale_seconds = max((reference_time - feature.ts).total_seconds(), 0.0)
+        source_ts = feature.ts
+        fetched_ts = max(coin.fetched_at, funding.fetched_at, heatmap.fetched_at)
+        feature.source_ts = source_ts
+        feature.ts = fetched_ts
+        feature.stale_seconds = max((reference_time - fetched_ts).total_seconds(), 0.0)
+        feature.source_lag_seconds = max((reference_time - source_ts).total_seconds(), 0.0)
         return feature
 
     async def _get_cached_payload(
@@ -247,7 +252,7 @@ class DecisionRuntimeService:
         ttl_seconds: int,
         fetcher: Callable[[], Awaitable[dict[str, object]]],
         request_stats: NofxRequestStats | None,
-    ) -> dict[str, object]:
+    ) -> CachedPayload:
         cache_key = (endpoint, key)
         cached = self.response_cache.get(cache_key)
         now = datetime.now(timezone.utc)
@@ -256,13 +261,14 @@ class DecisionRuntimeService:
             if age_seconds < ttl_seconds:
                 if request_stats is not None:
                     request_stats.cache_hits += 1
-                return cached.payload
+                return cached
 
         payload = await fetcher()
-        self.response_cache[cache_key] = CachedPayload(payload=payload, fetched_at=now)
+        cached_payload = CachedPayload(payload=payload, fetched_at=now)
+        self.response_cache[cache_key] = cached_payload
         if request_stats is not None:
             request_stats.api_requests += 1
-        return payload
+        return cached_payload
 
     def _build_order_request_preview(self, decision: TradeDecision) -> dict[str, object] | None:
         if decision.status != DecisionStatus.EXECUTE or decision.side is None or decision.risk is None:
@@ -311,6 +317,8 @@ class DecisionRuntimeService:
             "mode": self.mode_summary.mode.value,
             "feature_ts": feature.ts.isoformat(),
             "feature_stale_seconds": feature.stale_seconds,
+            "source_feature_ts": feature.source_ts.isoformat() if feature.source_ts is not None else None,
+            "source_lag_seconds": feature.source_lag_seconds,
             "decision": decision,
             "decision_status": decision.status.value,
             "regime": decision.regime.value,

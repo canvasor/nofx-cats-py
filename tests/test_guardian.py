@@ -21,6 +21,7 @@ class FlakyBinance:
         self.calls = 0
 
     async def countdown_cancel_all(self, symbol: str, countdown_ms: int) -> dict[str, object]:
+        await asyncio.sleep(0.001)
         self.calls += 1
         if self.calls <= self.failures:
             raise RuntimeError("heartbeat failed")
