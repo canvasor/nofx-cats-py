@@ -25,6 +25,9 @@ class MetaAllocator:
         elif signal.strategy_name == "crowding_reversal":
             regime_bonus = 4.0 if regime == MarketRegime.CROWDING else -1.0
             crowding_adjustment = abs(feature.funding_rate) * 1500 + hot_bonus
+        elif signal.strategy_name == "range_reversion":
+            regime_bonus = 3.5 if regime == MarketRegime.RANGE else -1.5
+            crowding_adjustment = max(0.0, 0.0025 - abs(feature.funding_rate)) * 1200 + hot_bonus * 0.5
         else:
             regime_bonus = 0.0
             crowding_adjustment = 0.0

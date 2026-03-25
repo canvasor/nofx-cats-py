@@ -53,3 +53,15 @@ class TrendFollowingStrategy(Strategy):
             )
 
         return None
+
+    def skip_reason(self, feature: FeatureVector) -> str:
+        ai_gate = max(feature.ai500_score / 100.0, feature.ai300_level_score)
+        if ai_gate < 0.70:
+            return "trend_following: ai gate below threshold"
+        if feature.crowding_score > 0.02:
+            return "trend_following: crowding too high"
+        if feature.oi_score <= 0:
+            return "trend_following: open interest not expanding"
+        if feature.trend_score == 0 or feature.flow_score == 0:
+            return "trend_following: trend or flow lacks direction"
+        return "trend_following: trend and flow are not aligned"

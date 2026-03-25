@@ -15,6 +15,7 @@ from cats_py.regime.engine import RegimeEngine
 from cats_py.services.decision_engine import DecisionEngine
 from cats_py.services.meta_allocator import MetaAllocator
 from cats_py.strategies.crowding_reversal import CrowdingReversalStrategy
+from cats_py.strategies.range_reversion import RangeReversionStrategy
 from cats_py.strategies.trend_following import TrendFollowingStrategy
 
 LIVE_MICRO_MAX_OPEN_POSITIONS: Final[int] = 1
@@ -313,7 +314,7 @@ def bootstrap() -> ServiceContainer:
     decision_engine = DecisionEngine(
         feature_engine=FeatureEngine(),
         regime_engine=RegimeEngine(),
-        strategies=[TrendFollowingStrategy(), CrowdingReversalStrategy()],
+        strategies=[TrendFollowingStrategy(), CrowdingReversalStrategy(), RangeReversionStrategy()],
         risk_kernel=RiskKernel(
             policy=risk,
             tier_policies=tier_policies,

@@ -40,9 +40,11 @@ class DecisionEngine:
             )
 
         candidates = []
+        strategy_skips: list[str] = []
         for strategy in self.strategies:
             signal = strategy.generate(enriched)
             if signal is None:
+                strategy_skips.append(strategy.skip_reason(enriched))
                 continue
             signal.regime = regime
             signal.action_score = self.meta_allocator.score(signal, enriched, regime)
@@ -53,7 +55,7 @@ class DecisionEngine:
                 decision_id=decision_id,
                 symbol=enriched.symbol,
                 regime=regime,
-                rationale=["no strategy produced a valid candidate", "NO_TRADE scored higher than any action"],
+                rationale=["no strategy produced a valid candidate", *strategy_skips],
             )
 
         rejected_reasons: list[str] = []

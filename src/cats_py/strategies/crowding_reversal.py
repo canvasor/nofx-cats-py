@@ -48,3 +48,15 @@ class CrowdingReversalStrategy(Strategy):
             )
 
         return None
+
+    def skip_reason(self, feature: FeatureVector) -> str:
+        hot = (feature.query_rank or 999) <= 5
+        if not hot:
+            return "crowding_reversal: symbol is not hot enough"
+        if abs(feature.funding_rate) < 0.0015:
+            return "crowding_reversal: funding is not extreme enough"
+        if feature.heatmap_delta == 0:
+            return "crowding_reversal: heatmap shows no reversal bias"
+        if feature.price_change_15m == 0:
+            return "crowding_reversal: short-term price impulse is flat"
+        return "crowding_reversal: reversal confirmation is incomplete"

@@ -9,6 +9,7 @@ from cats_py.risk.kernel import RiskKernel
 from cats_py.services.decision_engine import DecisionEngine
 from cats_py.services.meta_allocator import MetaAllocator
 from cats_py.strategies.base import Strategy
+from cats_py.strategies.range_reversion import RangeReversionStrategy
 
 
 class FirstRejectedStrategy(Strategy):
@@ -101,3 +102,73 @@ def test_decision_engine_continues_after_first_risk_rejection() -> None:
     decision = engine.decide(feature, account)
     assert decision.status.value == "EXECUTE"
     assert decision.selected_strategy == "second"
+
+
+class NeverSignalStrategy(Strategy):
+    name = "never"
+
+    def generate(self, feature: FeatureVector) -> SignalCandidate | None:
+        return None
+
+    def skip_reason(self, feature: FeatureVector) -> str:
+        return "never: conditions not met"
+
+
+def test_decision_engine_records_strategy_skip_reasons_when_no_candidate_exists() -> None:
+    engine = DecisionEngine(
+        feature_engine=FeatureEngine(),
+        regime_engine=RegimeEngine(),
+        strategies=[NeverSignalStrategy()],
+        risk_kernel=SelectiveRiskKernel(
+            policy=RiskPolicy(),
+            tier_policies={
+                SymbolTier.CORE: SymbolTierPolicy(max_leverage=3, max_symbol_notional_pct=25),
+                SymbolTier.LIQUID_ALT: SymbolTierPolicy(max_leverage=2, max_symbol_notional_pct=12),
+                SymbolTier.EXPERIMENTAL: SymbolTierPolicy(max_leverage=1, max_symbol_notional_pct=0, enabled=False),
+            },
+            symbol_tiers={"BTCUSDT": SymbolTier.CORE},
+        ),
+        meta_allocator=MetaAllocator(),
+    )
+
+    feature = FeatureVector(symbol="BTCUSDT", ts=datetime.now(timezone.utc))
+    account = AccountSnapshot(
+        equity=10_000,
+        daily_drawdown_pct=-0.2,
+        weekly_drawdown_pct=-0.3,
+        gross_exposure=0.2,
+        open_positions=1,
+        user_stream_stale_seconds=0,
+    )
+
+    decision = engine.decide(feature, account)
+
+    assert decision.status.value == "NO_TRADE"
+    assert "never: conditions not met" in decision.rationale
+
+
+def test_range_reversion_strategy_generates_candidate_in_range_conditions() -> None:
+    strategy = RangeReversionStrategy()
+    feature = FeatureVector(
+        symbol="BTCUSDT",
+        ts=datetime.now(timezone.utc),
+        ai500_score=70,
+        price_change_15m=-0.01,
+        price_change_1h=0.003,
+        price_change_4h=-0.002,
+        inst_future_flow_15m=3,
+        inst_future_flow_1h=1,
+        inst_future_flow_4h=0,
+        retail_future_flow_1h=0,
+        oi_binance_1h=0.001,
+        oi_bybit_1h=0.001,
+        funding_rate=0.0005,
+        heatmap_delta=250.0,
+    )
+
+    signal = strategy.generate(feature)
+
+    assert signal is not None
+    assert signal.regime == MarketRegime.RANGE
+    assert signal.side == Side.BUY
+    assert signal.strategy_name == "range_reversion"
