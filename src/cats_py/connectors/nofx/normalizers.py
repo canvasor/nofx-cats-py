@@ -6,6 +6,15 @@ from typing import Any
 from cats_py.domain.models import FeatureVector
 
 
+# 主流币默认 AI500 分数（当 NOFX 返回 0 时使用）
+MAINSTREAM_AI_DEFAULTS = {
+    'BTCUSDT': 75.0,
+    'ETHUSDT': 75.0,
+    'SOLUSDT': 70.0,
+    'BNBUSDT': 65.0,
+}
+
+
 def _to_ratio(value: float | int | None, already_percent_literal: bool) -> float:
     if value is None:
         return 0.0
@@ -101,11 +110,16 @@ def normalize_coin_snapshot(
         heatmap_data.get("timestamp"),
     )
 
+    # 获取 AI500 分数，如果为 0 则使用默认值
+    ai500_score = float(ai500.get("score", 0.0) or 0.0)
+    if ai500_score == 0.0 and symbol in MAINSTREAM_AI_DEFAULTS:
+        ai500_score = MAINSTREAM_AI_DEFAULTS[symbol]
+
     return FeatureVector(
         symbol=symbol,
         ts=ts,
         reference_price=extract_reference_price(data),
-        ai500_score=float(ai500.get("score", 0.0) or 0.0),
+        ai500_score=ai500_score,
         ai300_level_score=ai300_level_score,
         price_change_15m=_to_ratio(price_change.get("15m"), already_percent_literal=False),
         price_change_1h=_to_ratio(price_change.get("1h"), already_percent_literal=False),

@@ -1,0 +1,16 @@
+# 交易标的配置
+# 核心主流币（使用默认 AI 分数）
+core:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+
+# 流动性较好的替代币种
+liquid_alt:
+  - BNBUSDT
+  - XRPUSDT
+  - DOGEUSDT
+  - LINKUSDT
+
+# 实验性币种（暂时禁用）
+experimental: []
