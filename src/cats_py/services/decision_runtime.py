@@ -8,9 +8,10 @@ import uuid
 
 from cats_py.app.bootstrap import RuntimeModeSummary
 from cats_py.config.settings import AppConfig, RuntimeMode, SymbolConfig
-from cats_py.connectors.nofx.normalizers import normalize_coin_snapshot
+from cats_py.connectors.nofx.normalizers import build_ai300_level_map, build_query_rank_map, normalize_coin_snapshot
 from cats_py.domain.enums import DecisionStatus, MarketRegime, OrderType
 from cats_py.domain.models import AccountSnapshot, AccountState, FeatureVector, TradeDecision
+from cats_py.exits.evaluator import PositionExitEvaluator
 from cats_py.journal.recorder import JournalRecorder
 from cats_py.services.decision_engine import DecisionEngine
 from cats_py.services.paper_execution import PaperExecutionService
@@ -43,6 +44,10 @@ class NofxClientProtocol(Protocol):
     async def funding_rate(self, symbol: str) -> dict[str, object]: ...
 
     async def heatmap_future(self, symbol: str) -> dict[str, object]: ...
+
+    async def query_rank(self, *, limit: int = 20) -> dict[str, object]: ...
+
+    async def ai300_list(self, *, limit: int | None = None) -> dict[str, object]: ...
 
 
 def _object_mapping(value: object) -> dict[str, object]:
@@ -78,6 +83,7 @@ class DecisionRuntimeService:
         symbol_config: SymbolConfig,
         mode_summary: RuntimeModeSummary,
         paper_execution: PaperExecutionService | None = None,
+        exit_evaluator: PositionExitEvaluator | None = None,
     ) -> None:
         self.nofx = nofx
         self.decision_engine = decision_engine
@@ -87,7 +93,9 @@ class DecisionRuntimeService:
         self.symbol_config = symbol_config
         self.mode_summary = mode_summary
         self.paper_execution = paper_execution
+        self.exit_evaluator = exit_evaluator
         self.response_cache: dict[tuple[str, str], CachedPayload] = {}
+        self._cache_max_size = 256
         collectors = _object_mapping(app_config.nofx.get("collectors", {}))
         self.coin_ttl_seconds = _int_config(
             collectors.get("coin_interval_seconds"), app_config.core_loop_interval_seconds
@@ -97,6 +105,12 @@ class DecisionRuntimeService:
         )
         self.heatmap_ttl_seconds = _int_config(
             collectors.get("heatmap_interval_seconds"), app_config.core_loop_interval_seconds
+        )
+        self.query_rank_ttl_seconds = _int_config(
+            collectors.get("query_rank_interval_seconds"), 300
+        )
+        self.ai300_ttl_seconds = _int_config(
+            collectors.get("ai300_interval_seconds"), 300
         )
 
     def configured_symbols(self) -> list[str]:
@@ -132,10 +146,44 @@ class DecisionRuntimeService:
         request_stats = NofxRequestStats()
         features: dict[str, FeatureVector] = {}
         symbol_sources = self.symbol_sources()
+
+        query_rank_map: dict[str, int] = {}
+        ai300_level_map: dict[str, float] = {}
+        try:
+            qr_payload = await self._get_cached_payload(
+                endpoint="query_rank",
+                key="global",
+                ttl_seconds=self.query_rank_ttl_seconds,
+                fetcher=lambda: self.nofx.query_rank(limit=20),
+                request_stats=request_stats,
+            )
+            query_rank_map = build_query_rank_map(qr_payload.payload)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            ai300_payload = await self._get_cached_payload(
+                endpoint="ai300_list",
+                key="global",
+                ttl_seconds=self.ai300_ttl_seconds,
+                fetcher=lambda: self.nofx.ai300_list(limit=None),
+                request_stats=request_stats,
+            )
+            ai300_level_map = build_ai300_level_map(ai300_payload.payload)
+        except Exception:  # noqa: BLE001
+            pass
+
         for symbol in self.configured_symbols():
             try:
-                features[symbol] = await self._build_feature(symbol, now=cycle_started_at, request_stats=request_stats)
+                features[symbol] = await self._build_feature(
+                    symbol,
+                    now=cycle_started_at,
+                    request_stats=request_stats,
+                    query_rank_map=query_rank_map,
+                    ai300_level_map=ai300_level_map,
+                )
             except Exception as exc:  # noqa: BLE001
+                import traceback as _tb
+
                 self.journal.record(
                     "decision_cycle_error",
                     {
@@ -143,12 +191,42 @@ class DecisionRuntimeService:
                         "cycle_id": cycle_id,
                         "symbol": symbol,
                         "mode": self.mode_summary.mode.value,
-                        "error": str(exc),
+                        "error": str(exc) or repr(exc),
+                        "error_type": type(exc).__qualname__,
+                        "traceback": _tb.format_exc(),
                     },
                 )
 
         if self.mode_summary.paper_execution and self.paper_execution is not None:
             self.paper_execution.mark_to_market(features, cycle_id=cycle_id, ts=cycle_started_at)
+
+            if self.exit_evaluator is not None:
+                exit_decisions = self.exit_evaluator.evaluate(
+                    self.paper_execution.state,
+                    features,
+                    self.paper_execution.position_metadata,
+                    cycle_started_at,
+                )
+                for exit_decision in exit_decisions:
+                    exit_feature = features.get(exit_decision.symbol)
+                    if exit_feature is not None:
+                        self.paper_execution.apply_decision(
+                            exit_decision, exit_feature, cycle_id=cycle_id, ts=cycle_started_at,
+                        )
+                        exit_journal_entry = self._build_journal_entry(
+                            cycle_id=cycle_id,
+                            symbol=exit_decision.symbol,
+                            symbol_source=symbol_sources.get(exit_decision.symbol, "unknown"),
+                            feature=exit_feature,
+                            decision=exit_decision,
+                            account_snapshot=self.paper_execution.account_state(
+                                now=cycle_started_at,
+                            ).to_snapshot(now=cycle_started_at),
+                            order_request_preview=None,
+                        )
+                        self.journal.record(self.decision_stream(), exit_journal_entry)
+                        self.journal.record("exit_decision_log", exit_journal_entry)
+
             account_state = self.paper_execution.account_state(now=cycle_started_at)
         else:
             account_state = await self.reconciler.reconcile()
@@ -211,6 +289,8 @@ class DecisionRuntimeService:
         *,
         now: datetime | None = None,
         request_stats: NofxRequestStats | None = None,
+        query_rank_map: dict[str, int] | None = None,
+        ai300_level_map: dict[str, float] | None = None,
     ) -> FeatureVector:
         base_symbol = symbol.replace("USDT", "")
         coin = await self._get_cached_payload(
@@ -234,7 +314,14 @@ class DecisionRuntimeService:
             fetcher=lambda: self.nofx.heatmap_future(base_symbol),
             request_stats=request_stats,
         )
-        feature = normalize_coin_snapshot(symbol, coin.payload, funding.payload, heatmap.payload)
+        feature = normalize_coin_snapshot(
+            symbol,
+            coin.payload,
+            funding.payload,
+            heatmap.payload,
+            query_rank=(query_rank_map or {}).get(symbol),
+            ai300_level_score=(ai300_level_map or {}).get(symbol, 0.0),
+        )
         reference_time = now or datetime.now(timezone.utc)
         source_ts = feature.ts
         fetched_ts = max(coin.fetched_at, funding.fetched_at, heatmap.fetched_at)
@@ -265,6 +352,9 @@ class DecisionRuntimeService:
 
         payload = await fetcher()
         cached_payload = CachedPayload(payload=payload, fetched_at=now)
+        if len(self.response_cache) >= self._cache_max_size:
+            oldest_key = min(self.response_cache, key=lambda k: self.response_cache[k].fetched_at)
+            del self.response_cache[oldest_key]
         self.response_cache[cache_key] = cached_payload
         if request_stats is not None:
             request_stats.api_requests += 1

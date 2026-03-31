@@ -34,6 +34,12 @@ class DummyNofx:
     async def heatmap_future(self, symbol: str) -> dict[str, object]:
         return {"data": {"heatmap": {"delta": 1000, "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)}}}
 
+    async def query_rank(self, *, limit: int = 20) -> dict[str, object]:
+        return {"data": {"rankings": []}}
+
+    async def ai300_list(self, *, limit: int | None = None) -> dict[str, object]:
+        return {"data": {"coins": []}}
+
 
 class DummyReconciler:
     def __init__(self, account_state) -> None:
@@ -220,3 +226,33 @@ def test_decision_runtime_uses_paper_execution_state_in_paper_mode() -> None:
     assert "paper_decision_log" in streams
     assert "paper_fill_log" in streams
     assert "paper_pnl_log" in streams
+
+
+def test_paper_execution_activates_kill_switch_on_negative_equity() -> None:
+    journal = MemoryJournal()
+    paper = PaperExecutionService(
+        journal=journal,
+        starting_balance=10.0,
+        slippage_bps=0.0,
+        taker_fee_bps=0.0,
+        funding_interval_hours=8.0,
+    )
+    ts = datetime.now(timezone.utc)
+
+    # Open a large long position relative to balance
+    paper.apply_decision(
+        make_execute_decision("BTCUSDT", Side.BUY, notional=100.0),
+        make_feature("BTCUSDT", 100.0),
+        cycle_id="cycle-open",
+        ts=ts,
+    )
+    # Close at a massive loss: bought at 100, sell at 1 → lose 99 per unit
+    paper.apply_decision(
+        make_execute_decision("BTCUSDT", Side.SELL, notional=100.0),
+        make_feature("BTCUSDT", 1.0),
+        cycle_id="cycle-close",
+        ts=ts,
+    )
+
+    assert paper.state.kill_switch_active is True
+    assert paper.state.last_kill_switch_reason == "paper equity depleted"

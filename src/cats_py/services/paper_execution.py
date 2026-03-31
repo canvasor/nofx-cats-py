@@ -6,6 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from cats_py.domain.enums import DecisionStatus, PositionDirection, Side
 from cats_py.domain.models import AccountState, BalanceState, FeatureVector, PositionState, TradeDecision
+from cats_py.exits.evaluator import PositionEntryMeta
 from cats_py.journal.recorder import JournalRecorder
 
 USDT = "USDT"
@@ -42,6 +43,7 @@ class PaperExecutionService:
         self.turnover_notional = Decimal("0")
         self.initial_balance = Decimal(str(starting_balance))
         self.last_funding_applied_at: dict[str, datetime] = {}
+        self.position_metadata: dict[str, PositionEntryMeta] = {}
         self.state = AccountState()
         self.state.upsert_balance(
             BalanceState(
@@ -73,6 +75,14 @@ class PaperExecutionService:
             position.notional = position.quantity * mark_price
             position.unrealized_pnl = (mark_price - position.entry_price) * position.quantity
             position.updated_at = ts
+
+            meta = self.position_metadata.get(position.symbol)
+            if meta is not None:
+                current_mark = float(mark_price)
+                if position.direction == PositionDirection.LONG:
+                    meta.peak_price = max(meta.peak_price, current_mark)
+                elif position.direction == PositionDirection.SHORT:
+                    meta.peak_price = min(meta.peak_price, current_mark)
 
         if funding_delta != 0:
             self.funding_pnl += funding_delta
@@ -134,6 +144,16 @@ class PaperExecutionService:
         position.updated_at = ts
 
         self.state.upsert_position(position)
+
+        if new_quantity != 0 and old_quantity == 0:
+            self.position_metadata[decision.symbol] = PositionEntryMeta(
+                entry_time=ts,
+                peak_price=float(fill_price),
+                strategy_name=decision.selected_strategy or "unknown",
+            )
+        elif new_quantity == 0:
+            self.position_metadata.pop(decision.symbol, None)
+
         self.realized_pnl += realized_delta
         self.fees_paid += fee_delta
         self.turnover_notional += turnover_delta
@@ -221,6 +241,8 @@ class PaperExecutionService:
         )
         balance.available_balance = balance.wallet_balance
         balance.cross_wallet_balance = balance.wallet_balance
+        if balance.wallet_balance <= 0 and not self.state.kill_switch_active:
+            self.state.activate_kill_switch("paper equity depleted")
 
     def _maybe_apply_funding(self, position: PositionState, feature: FeatureVector, ts: datetime) -> Decimal:
         if feature.funding_rate == 0:

@@ -44,6 +44,12 @@ class DummyNofx:
         self.heatmap_calls += 1
         return {"data": {"heatmap": {"delta": 1000, "timestamp": self.timestamp_ms}}}
 
+    async def query_rank(self, *, limit: int = 20) -> dict[str, object]:
+        return {"data": {"rankings": []}}
+
+    async def ai300_list(self, *, limit: int | None = None) -> dict[str, object]:
+        return {"data": {"coins": []}}
+
 
 class DummyDecisionEngine:
     def __init__(self) -> None:
@@ -271,9 +277,36 @@ def test_decision_runtime_reuses_cached_nofx_payloads_between_cycles() -> None:
     first = asyncio.run(service.run_cycle())
     second = asyncio.run(service.run_cycle())
 
-    assert first.request_stats.api_requests == 3
+    assert first.request_stats.api_requests == 5  # 3 per-symbol + 2 global (query_rank, ai300)
     assert second.request_stats.api_requests == 0
-    assert second.request_stats.cache_hits == 3
+    assert second.request_stats.cache_hits == 5
     assert nofx.coin_calls == 1
     assert nofx.funding_calls == 1
     assert nofx.heatmap_calls == 1
+
+
+def test_response_cache_evicts_oldest_when_full() -> None:
+    service = DecisionRuntimeService(
+        nofx=DummyNofx(),
+        decision_engine=DummyDecisionEngine(),
+        reconciler=DummyReconciler(AccountState()),
+        journal=MemoryJournal(),  # type: ignore[arg-type]
+        app_config=make_app_config(),
+        symbol_config=SymbolConfig(core=["BTCUSDT"], liquid_alt=[], experimental=[]),
+        mode_summary=make_mode_summary(RuntimeMode.SHADOW),
+    )
+    service._cache_max_size = 3
+
+    # Fill cache with 3 entries
+    from cats_py.services.decision_runtime import CachedPayload
+    base_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    service.response_cache[("a", "1")] = CachedPayload(payload={}, fetched_at=base_time)
+    service.response_cache[("b", "2")] = CachedPayload(payload={}, fetched_at=base_time + timedelta(seconds=1))
+    service.response_cache[("c", "3")] = CachedPayload(payload={}, fetched_at=base_time + timedelta(seconds=2))
+    assert len(service.response_cache) == 3
+
+    # Run a cycle which adds new entries — oldest should be evicted
+    asyncio.run(service.run_cycle())
+
+    assert len(service.response_cache) <= 5  # bounded, not unbounded
+    assert ("a", "1") not in service.response_cache  # oldest evicted first

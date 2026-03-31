@@ -36,11 +36,11 @@ def test_non_mainstream_symbols_get_zero_score():
 
 def test_all_mainstream_symbols_have_defaults():
     """所有主流币种都应该有默认值"""
-    expected_symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT']
+    expected_symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'LINKUSDT']
 
     for symbol in expected_symbols:
         assert symbol in MAINSTREAM_AI_DEFAULTS
-        assert MAINSTREAM_AI_DEFAULTS[symbol] >= 65.0
+        assert MAINSTREAM_AI_DEFAULTS[symbol] >= 55.0
 
 
 def test_ai_gate_calculation_with_defaults():
@@ -51,3 +51,22 @@ def test_ai_gate_calculation_with_defaults():
     ai_gate = max(feature.ai500_score / 100.0, feature.ai300_level_score)
 
     assert ai_gate >= 0.70  # 趋势策略阈值
+
+
+def test_xrp_doge_link_have_defaults():
+    """XRP/DOGE/LINK 应该有默认 AI 分数"""
+    mock_coin = {"data": {"ai500": {"score": 0.0}}}
+
+    for symbol in ("XRPUSDT", "DOGEUSDT", "LINKUSDT"):
+        feature = normalize_coin_snapshot(symbol, mock_coin)
+        assert feature.ai500_score > 0, f"{symbol} should have default AI score"
+
+
+def test_doge_ai_gate_passes_range_reversion_threshold():
+    """DOGE 的 ai_gate 应该 >= 0.55 (range_reversion 阈值)"""
+    mock_coin = {"data": {"ai500": {"score": 0.0}}}
+
+    feature = normalize_coin_snapshot("DOGEUSDT", mock_coin)
+    ai_gate = max(feature.ai500_score / 100.0, feature.ai300_level_score)
+
+    assert ai_gate >= 0.55

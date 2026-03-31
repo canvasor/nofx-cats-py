@@ -53,6 +53,10 @@ class AppConfig(BaseModel):
     paper_fill_slippage_bps: float = 1.0
     paper_taker_fee_bps: float = 4.0
     paper_funding_interval_hours: float = 8.0
+    exit_stop_loss_pct: float = 0.015
+    exit_take_profit_pct: float = 0.02
+    exit_max_hold_hours: float = 4.0
+    exit_trailing_stop_pct: float = 0.01
     nofx: dict[str, object] = Field(default_factory=dict)
     binance: dict[str, object] = Field(default_factory=dict)
 

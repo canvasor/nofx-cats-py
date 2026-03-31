@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from cats_py.app.bootstrap import bootstrap
 from cats_py.domain.enums import DecisionStatus
+from cats_py.exits.evaluator import ExitConfig, PositionExitEvaluator
 from cats_py.infra.logging import configure_logging
 from cats_py.infra.storage import JsonlStorage
 from cats_py.journal.recorder import JournalRecorder
@@ -22,6 +23,7 @@ async def main() -> None:
     storage = JsonlStorage(base_dir="data")
     journal = JournalRecorder(storage)
     paper_execution = None
+    exit_evaluator = None
     if services.mode_summary.paper_execution:
         paper_execution = PaperExecutionService(
             journal=journal,
@@ -30,6 +32,12 @@ async def main() -> None:
             taker_fee_bps=services.app_config.paper_taker_fee_bps,
             funding_interval_hours=services.app_config.paper_funding_interval_hours,
         )
+        exit_evaluator = PositionExitEvaluator(ExitConfig(
+            stop_loss_pct=services.app_config.exit_stop_loss_pct,
+            take_profit_pct=services.app_config.exit_take_profit_pct,
+            max_hold_hours=services.app_config.exit_max_hold_hours,
+            trailing_stop_pct=services.app_config.exit_trailing_stop_pct,
+        ))
         logger.info(
             "paper_runtime_initialized",
             extra={
@@ -48,6 +56,7 @@ async def main() -> None:
         symbol_config=services.symbol_config,
         mode_summary=services.mode_summary,
         paper_execution=paper_execution,
+        exit_evaluator=exit_evaluator,
     )
 
     try:

@@ -12,6 +12,9 @@ MAINSTREAM_AI_DEFAULTS = {
     'ETHUSDT': 75.0,
     'SOLUSDT': 70.0,
     'BNBUSDT': 65.0,
+    'XRPUSDT': 60.0,
+    'DOGEUSDT': 55.0,
+    'LINKUSDT': 60.0,
 }
 
 
