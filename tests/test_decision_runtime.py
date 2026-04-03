@@ -4,8 +4,9 @@ from datetime import datetime, timedelta, timezone
 from cats_py.app.bootstrap import RuntimeModeSummary
 from cats_py.config.settings import AppConfig, RuntimeMode, SymbolConfig
 from cats_py.domain.enums import DecisionStatus, MarketRegime, RiskDecisionStatus, Side, SymbolTier
-from cats_py.domain.models import AccountState, BalanceState, RiskDecision, TradeDecision
+from cats_py.domain.models import AccountState, BalanceState, FeatureVector, RiskDecision, TradeDecision
 from cats_py.services.decision_runtime import CachedPayload, DecisionRuntimeService
+from cats_py.services.paper_execution import PaperExecutionService
 
 
 class DummyNofx:
@@ -171,8 +172,9 @@ def test_decision_runtime_uses_reconciled_account_snapshot_and_records_decisions
     assert len(result.decisions) == 2
     assert nofx.requested_symbols == ["BTCUSDT", "ETHUSDT"]
     assert decision_engine.received_snapshots[0].equity == 1000.0
-    assert journal.entries[0][0] == "shadow_decision_log"
-    assert journal.entries[0][1]["symbol_source"] == "core"
+    shadow_entries = [(s, p) for s, p in journal.entries if s == "shadow_decision_log"]
+    assert len(shadow_entries) >= 1
+    assert shadow_entries[0][1]["symbol_source"] == "core"
     assert result.decisions[0].status == DecisionStatus.NO_TRADE
 
 
@@ -193,7 +195,8 @@ def test_decision_runtime_records_order_preview_when_execution_is_mode_blocked()
 
     result = asyncio.run(service.run_cycle())
 
-    entry = journal.entries[0][1]
+    shadow_entries = [(s, p) for s, p in journal.entries if s == "shadow_decision_log"]
+    entry = shadow_entries[0][1]
     assert result.decisions[0].status == DecisionStatus.EXECUTE
     assert entry["order_request_preview"]["submission_blocked_by_mode"] == RuntimeMode.SHADOW.value
     assert entry["risk"]["approved_notional"] == 125.0
@@ -216,7 +219,8 @@ def test_decision_runtime_blocks_stale_nofx_feature_before_strategy_eval() -> No
 
     assert result.decisions[0].status == DecisionStatus.NO_TRADE
     assert result.decisions[0].rationale == ["test"]
-    entry = journal.entries[0][1]
+    shadow_entries = [(s, p) for s, p in journal.entries if s == "shadow_decision_log"]
+    entry = shadow_entries[0][1]
     assert entry["source_lag_seconds"] > 60
     assert entry["feature_stale_seconds"] < 5
 
@@ -310,3 +314,145 @@ def test_response_cache_evicts_oldest_when_full() -> None:
 
     assert len(service.response_cache) <= 5  # bounded, not unbounded
     assert ("a", "1") not in service.response_cache  # oldest evicted first
+
+
+def _make_paper_runtime(
+    journal: MemoryJournal,
+    decision_engine=None,
+    symbols: list[str] | None = None,
+) -> tuple[DecisionRuntimeService, PaperExecutionService]:
+    """Helper to build a paper-mode runtime + paper execution service."""
+    paper = PaperExecutionService(
+        journal=journal,
+        starting_balance=10_000.0,
+        slippage_bps=0.0,
+        taker_fee_bps=0.0,
+        funding_interval_hours=8.0,
+    )
+    engine = decision_engine or DummyDecisionEngine()
+    syms = symbols or ["BTCUSDT"]
+    service = DecisionRuntimeService(
+        nofx=DummyNofx(),
+        decision_engine=engine,
+        reconciler=DummyReconciler(AccountState()),
+        journal=journal,  # type: ignore[arg-type]
+        app_config=AppConfig(
+            mode=RuntimeMode.PAPER,
+            core_loop_interval_seconds=1,
+            nofx_stale_kill_seconds=45,
+            paper_starting_balance=10_000.0,
+            paper_fill_slippage_bps=0.0,
+            paper_taker_fee_bps=0.0,
+            paper_funding_interval_hours=8.0,
+        ),
+        symbol_config=SymbolConfig(core=syms, liquid_alt=[], experimental=[]),
+        mode_summary=make_mode_summary(RuntimeMode.PAPER),
+        paper_execution=paper,
+    )
+    return service, paper
+
+
+def test_decision_runtime_skips_symbol_in_exit_cooldown() -> None:
+    journal = MemoryJournal()
+    service, paper = _make_paper_runtime(journal)
+
+    # Simulate an exit 10 minutes ago
+    from datetime import datetime, timezone
+    paper.last_exit_time["BTCUSDT"] = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+    result = asyncio.run(service.run_cycle())
+
+    btc_decision = [d for d in result.decisions if d.symbol == "BTCUSDT"][0]
+    assert btc_decision.status == DecisionStatus.NO_TRADE
+    assert "exit cooldown active" in btc_decision.rationale
+
+
+def test_decision_runtime_skips_symbol_with_open_position() -> None:
+    journal = MemoryJournal()
+    service, paper = _make_paper_runtime(journal, decision_engine=ExecuteDecisionEngine())
+
+    # Run first cycle to open a position
+    asyncio.run(service.run_cycle())
+    assert paper.state.open_position_count() == 1
+
+    # Run second cycle — should block due to existing position
+    result = asyncio.run(service.run_cycle())
+
+    btc_decision = [d for d in result.decisions if d.symbol == "BTCUSDT"][0]
+    assert btc_decision.status == DecisionStatus.NO_TRADE
+    assert "position already open" in btc_decision.rationale
+
+
+def test_reject_reason_populated_for_no_trade() -> None:
+    journal = MemoryJournal()
+    service = DecisionRuntimeService(
+        nofx=DummyNofx(),
+        decision_engine=DummyDecisionEngine(),
+        reconciler=DummyReconciler(AccountState()),
+        journal=journal,  # type: ignore[arg-type]
+        app_config=make_app_config(),
+        symbol_config=SymbolConfig(core=["BTCUSDT"], liquid_alt=[], experimental=[]),
+        mode_summary=make_mode_summary(RuntimeMode.SHADOW),
+    )
+
+    asyncio.run(service.run_cycle())
+
+    shadow_entries = [(s, p) for s, p in journal.entries if s == "shadow_decision_log"]
+    entry = shadow_entries[0][1]
+    assert entry["decision_status"] == "NO_TRADE"
+    assert entry["reject_reason"] == "test"
+
+
+def test_reject_reason_empty_for_execute() -> None:
+    journal = MemoryJournal()
+    account_state = AccountState()
+    account_state.upsert_balance(BalanceState(asset="USDT", wallet_balance=1000))  # type: ignore[arg-type]
+    account_state.record_user_stream_event(datetime.now(timezone.utc))
+    service = DecisionRuntimeService(
+        nofx=DummyNofx(),
+        decision_engine=ExecuteDecisionEngine(),  # type: ignore[arg-type]
+        reconciler=DummyReconciler(account_state),  # type: ignore[arg-type]
+        journal=journal,  # type: ignore[arg-type]
+        app_config=make_app_config(),
+        symbol_config=SymbolConfig(core=["BTCUSDT"], liquid_alt=[], experimental=[]),
+        mode_summary=make_mode_summary(RuntimeMode.SHADOW),
+    )
+
+    asyncio.run(service.run_cycle())
+
+    shadow_entries = [(s, p) for s, p in journal.entries if s == "shadow_decision_log"]
+    entry = shadow_entries[0][1]
+    assert entry["decision_status"] == "EXECUTE"
+    assert entry["reject_reason"] == ""
+
+
+def test_global_data_diagnostic_logged() -> None:
+    journal = MemoryJournal()
+
+    class RankingNofx(DummyNofx):
+        async def query_rank(self, *, limit: int = 20) -> dict[str, object]:
+            return {
+                "data": {
+                    "rankings": [
+                        {"symbol": "BTCUSDT", "rank": 1},
+                        {"symbol": "ETHUSDT", "rank": 2},
+                    ]
+                }
+            }
+
+    service = DecisionRuntimeService(
+        nofx=RankingNofx(),
+        decision_engine=DummyDecisionEngine(),
+        reconciler=DummyReconciler(AccountState()),
+        journal=journal,  # type: ignore[arg-type]
+        app_config=make_app_config(),
+        symbol_config=SymbolConfig(core=["BTCUSDT"], liquid_alt=[], experimental=[]),
+        mode_summary=make_mode_summary(RuntimeMode.SHADOW),
+    )
+
+    asyncio.run(service.run_cycle())
+
+    streams = [entry[0] for entry in journal.entries]
+    assert "global_data_diagnostic" in streams
+    diag = next(e[1] for e in journal.entries if e[0] == "global_data_diagnostic")
+    assert "BTCUSDT" in diag["configured_symbols"]

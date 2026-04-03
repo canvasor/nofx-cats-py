@@ -186,6 +186,7 @@ def test_paper_execution_tracks_fee_funding_and_turnover() -> None:
     assert latest_pnl["turnover_notional"] == 200.0
 
 
+
 class ExecuteAllDecisionEngine:
     def decide(self, feature, account_snapshot) -> TradeDecision:
         return make_execute_decision(feature.symbol, Side.BUY, notional=100.0)
@@ -256,3 +257,54 @@ def test_paper_execution_activates_kill_switch_on_negative_equity() -> None:
 
     assert paper.state.kill_switch_active is True
     assert paper.state.last_kill_switch_reason == "paper equity depleted"
+
+
+def test_paper_execution_records_last_exit_time_on_close() -> None:
+    journal = MemoryJournal()
+    paper = PaperExecutionService(
+        journal=journal,
+        starting_balance=1000.0,
+        slippage_bps=0.0,
+        taker_fee_bps=0.0,
+        funding_interval_hours=8.0,
+    )
+    ts = datetime.now(timezone.utc)
+
+    paper.apply_decision(
+        make_execute_decision("BTCUSDT", Side.BUY, notional=200.0),
+        make_feature("BTCUSDT", 100.0),
+        cycle_id="cycle-open",
+        ts=ts,
+    )
+    close_ts = ts + timedelta(hours=1)
+    paper.apply_decision(
+        make_execute_decision("BTCUSDT", Side.SELL, notional=200.0),
+        make_feature("BTCUSDT", 100.0),
+        cycle_id="cycle-close",
+        ts=close_ts,
+    )
+
+    assert "BTCUSDT" in paper.last_exit_time
+    assert paper.last_exit_time["BTCUSDT"] == close_ts
+
+
+def test_paper_execution_cooldown_logic() -> None:
+    journal = MemoryJournal()
+    paper = PaperExecutionService(
+        journal=journal,
+        starting_balance=1000.0,
+        slippage_bps=0.0,
+        taker_fee_bps=0.0,
+        funding_interval_hours=8.0,
+    )
+    exit_ts = datetime.now(timezone.utc)
+    paper.last_exit_time["ETHUSDT"] = exit_ts
+
+    # 10 min later — still in cooldown (30 min)
+    assert paper.is_in_cooldown("ETHUSDT", exit_ts + timedelta(minutes=10), 30.0) is True
+
+    # 31 min later — cooldown expired
+    assert paper.is_in_cooldown("ETHUSDT", exit_ts + timedelta(minutes=31), 30.0) is False
+
+    # Symbol never exited — no cooldown
+    assert paper.is_in_cooldown("BTCUSDT", exit_ts, 30.0) is False

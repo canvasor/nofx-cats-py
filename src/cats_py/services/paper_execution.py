@@ -44,6 +44,7 @@ class PaperExecutionService:
         self.initial_balance = Decimal(str(starting_balance))
         self.last_funding_applied_at: dict[str, datetime] = {}
         self.position_metadata: dict[str, PositionEntryMeta] = {}
+        self.last_exit_time: dict[str, datetime] = {}
         self.state = AccountState()
         self.state.upsert_balance(
             BalanceState(
@@ -58,6 +59,13 @@ class PaperExecutionService:
         self.state.record_user_stream_event(now)
         self.state.mark_reconciled(now)
         return self.state
+
+    def is_in_cooldown(self, symbol: str, now: datetime, cooldown_minutes: float) -> bool:
+        exit_time = self.last_exit_time.get(symbol)
+        if exit_time is None:
+            return False
+        elapsed_minutes = (now - exit_time).total_seconds() / 60.0
+        return elapsed_minutes < cooldown_minutes
 
     def mark_to_market(self, features: dict[str, FeatureVector], *, cycle_id: str, ts: datetime) -> None:
         funding_delta = Decimal("0")
@@ -153,6 +161,7 @@ class PaperExecutionService:
             )
         elif new_quantity == 0:
             self.position_metadata.pop(decision.symbol, None)
+            self.last_exit_time[decision.symbol] = ts
 
         self.realized_pnl += realized_delta
         self.fees_paid += fee_delta

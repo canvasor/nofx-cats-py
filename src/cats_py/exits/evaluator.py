@@ -32,7 +32,7 @@ class ExitConfig:
     stop_loss_pct: float = 0.015
     take_profit_pct: float = 0.02
     max_hold_hours: float = 4.0
-    trailing_stop_pct: float = 0.01
+    trailing_stop_pct: float = 0.025
 
 
 class PositionExitEvaluator:

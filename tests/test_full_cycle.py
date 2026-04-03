@@ -185,7 +185,7 @@ def test_cycle_opens_position_then_exits_on_stop_loss() -> None:
     # Check that an exit_stop_loss event was logged
     exit_logs = [
         (s, p) for s, p in journal.entries
-        if s == "paper_decision_log" and isinstance(p, dict) and p.get("selected_strategy", "").startswith("exit_")
+        if s == "paper_decision_log" and isinstance(p, dict) and (p.get("selected_strategy") or "").startswith("exit_")
     ]
     assert len(exit_logs) >= 1
     # Also verify dedicated exit_decision_log stream

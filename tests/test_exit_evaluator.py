@@ -167,6 +167,45 @@ def test_exit_reduces_open_position_count() -> None:
     assert exits[0].symbol == "BTCUSDT"
 
 
+def test_default_trailing_stop_does_not_trigger_at_old_1pct_threshold() -> None:
+    """With new 2.5% default, a 1.5% retrace should NOT trigger trailing stop."""
+    evaluator = PositionExitEvaluator()  # uses default ExitConfig with 0.025
+    state = AccountState()
+    pos = make_position("BTCUSDT", qty=1.0, entry=100.0, mark=100.5)
+    state.upsert_position(pos)
+    features = {"BTCUSDT": make_feature("BTCUSDT", price=100.5)}
+    now = datetime.now(timezone.utc)
+    meta = {"BTCUSDT": PositionEntryMeta(
+        entry_time=now - timedelta(hours=1),
+        peak_price=102.0,  # 1.47% retrace from 102 to 100.5
+        strategy_name="trend_following",
+    )}
+
+    exits = evaluator.evaluate(state, features, meta, now)
+
+    assert len(exits) == 0
+
+
+def test_default_trailing_stop_triggers_at_new_2_5pct_threshold() -> None:
+    """With new 2.5% default, a 3% retrace should trigger trailing stop."""
+    evaluator = PositionExitEvaluator(ExitConfig(stop_loss_pct=1.0))  # disable stop loss
+    state = AccountState()
+    pos = make_position("BTCUSDT", qty=1.0, entry=100.0, mark=97.0)
+    state.upsert_position(pos)
+    features = {"BTCUSDT": make_feature("BTCUSDT", price=97.0)}
+    now = datetime.now(timezone.utc)
+    meta = {"BTCUSDT": PositionEntryMeta(
+        entry_time=now - timedelta(hours=1),
+        peak_price=100.0,  # 3% retrace from 100 to 97
+        strategy_name="trend_following",
+    )}
+
+    exits = evaluator.evaluate(state, features, meta, now)
+
+    assert len(exits) == 1
+    assert exits[0].selected_strategy == "exit_trailing_stop"
+
+
 def test_exception_in_one_position_does_not_block_others() -> None:
     evaluator = PositionExitEvaluator(ExitConfig(stop_loss_pct=0.01))
     state = AccountState()

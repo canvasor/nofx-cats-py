@@ -172,7 +172,35 @@ class DecisionRuntimeService:
         except Exception:  # noqa: BLE001
             pass
 
-        for symbol in self.configured_symbols():
+        configured = self.configured_symbols()
+        if query_rank_map or ai300_level_map:
+            top_qr = sorted(query_rank_map.items(), key=lambda x: x[1])[:5]
+            self.journal.record(
+                "global_data_log",
+                {
+                    "ts": cycle_started_at.isoformat(),
+                    "cycle_id": cycle_id,
+                    "data_type": "query_rank",
+                    "symbols_count": len(query_rank_map),
+                    "top_symbols": [s for s, _ in top_qr],
+                    "ai300_symbols_count": len(ai300_level_map),
+                },
+            )
+        covered = [s for s in configured if s in query_rank_map]
+        missing = [s for s in configured if s not in query_rank_map]
+        self.journal.record(
+            "global_data_diagnostic",
+            {
+                "ts": cycle_started_at.isoformat(),
+                "cycle_id": cycle_id,
+                "configured_symbols": configured,
+                "query_rank_covered": covered,
+                "query_rank_missing": missing,
+                "ai300_covered": [s for s in configured if s in ai300_level_map],
+            },
+        )
+
+        for symbol in configured:
             try:
                 features[symbol] = await self._build_feature(
                     symbol,
@@ -233,7 +261,14 @@ class DecisionRuntimeService:
         account_snapshot = account_state.to_snapshot(now=cycle_started_at)
 
         decisions: list[TradeDecision] = []
-        for symbol in self.configured_symbols():
+        open_symbols: set[str] = set()
+        if self.mode_summary.paper_execution and self.paper_execution is not None:
+            open_symbols = {
+                pos.symbol
+                for pos in self.paper_execution.state.positions.values()
+                if pos.is_open
+            }
+        for symbol in configured:
             feature = features.get(symbol)
             if feature is None:
                 continue
@@ -246,6 +281,32 @@ class DecisionRuntimeService:
                     rationale=[
                         "nofx feature stale",
                         f"feature stale for {feature.stale_seconds:.1f}s",
+                    ],
+                )
+            elif (
+                self.mode_summary.paper_execution
+                and self.paper_execution is not None
+                and self.paper_execution.is_in_cooldown(
+                    symbol, cycle_started_at, self.app_config.exit_cooldown_minutes,
+                )
+            ):
+                decision = TradeDecision.no_trade(
+                    decision_id=f"cooldown-{symbol.lower()}-{cycle_id[:8]}",
+                    symbol=symbol,
+                    regime=MarketRegime.UNKNOWN,
+                    rationale=[
+                        "exit cooldown active",
+                        f"cooldown {self.app_config.exit_cooldown_minutes:.0f}min",
+                    ],
+                )
+            elif symbol in open_symbols:
+                decision = TradeDecision.no_trade(
+                    decision_id=f"already-open-{symbol.lower()}-{cycle_id[:8]}",
+                    symbol=symbol,
+                    regime=MarketRegime.UNKNOWN,
+                    rationale=[
+                        "position already open",
+                        f"{symbol} has existing position",
                     ],
                 )
             else:
@@ -414,6 +475,7 @@ class DecisionRuntimeService:
             "regime": decision.regime.value,
             "selected_strategy": decision.selected_strategy,
             "action_score": decision.action_score,
+            "reject_reason": decision.rationale[0] if decision.rationale and decision.status == DecisionStatus.NO_TRADE else "",
             "risk": risk_payload,
             "order_request_preview": order_request_preview,
             "account_snapshot": account_snapshot,
