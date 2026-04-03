@@ -308,3 +308,37 @@ def test_paper_execution_cooldown_logic() -> None:
 
     # Symbol never exited — no cooldown
     assert paper.is_in_cooldown("BTCUSDT", exit_ts, 30.0) is False
+
+
+def test_paper_execution_tracks_drawdown_from_high_watermark() -> None:
+    journal = MemoryJournal()
+    paper = PaperExecutionService(
+        journal=journal,
+        starting_balance=1000.0,
+        slippage_bps=0.0,
+        taker_fee_bps=0.0,
+        funding_interval_hours=8.0,
+    )
+    ts = datetime.now(timezone.utc)
+
+    # Initial drawdown should be 0
+    paper.account_state(now=ts)
+    assert paper.drawdown_pct() == 0.0
+
+    # Open and profit → high watermark should rise
+    paper.apply_decision(
+        make_execute_decision("BTCUSDT", Side.BUY, notional=200.0),
+        make_feature("BTCUSDT", 100.0),
+        cycle_id="cycle-open",
+        ts=ts,
+    )
+    paper.mark_to_market({"BTCUSDT": make_feature("BTCUSDT", 110.0)}, cycle_id="cycle-profit", ts=ts)
+    paper.account_state(now=ts)
+    assert paper.drawdown_pct() == 0.0  # at new high
+
+    # Price drops → drawdown should be negative
+    paper.mark_to_market({"BTCUSDT": make_feature("BTCUSDT", 95.0)}, cycle_id="cycle-loss", ts=ts)
+    paper.account_state(now=ts)
+    dd = paper.drawdown_pct()
+    assert dd < 0.0  # should be negative
+    assert dd > -10.0  # sanity bound

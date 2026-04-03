@@ -4,8 +4,6 @@ from enum import Enum
 
 
 class Side(str, Enum):
-    LONG = "LONG"
-    SHORT = "SHORT"
     BUY = "BUY"
     SELL = "SELL"
 

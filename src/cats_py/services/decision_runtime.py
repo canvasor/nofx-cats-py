@@ -200,15 +200,18 @@ class DecisionRuntimeService:
             },
         )
 
-        for symbol in configured:
+        import asyncio as _asyncio
+
+        async def _fetch_symbol_feature(sym: str) -> tuple[str, FeatureVector | None]:
             try:
-                features[symbol] = await self._build_feature(
-                    symbol,
+                fv = await self._build_feature(
+                    sym,
                     now=cycle_started_at,
                     request_stats=request_stats,
                     query_rank_map=query_rank_map,
                     ai300_level_map=ai300_level_map,
                 )
+                return sym, fv
             except Exception as exc:  # noqa: BLE001
                 import traceback as _tb
 
@@ -217,13 +220,19 @@ class DecisionRuntimeService:
                     {
                         "ts": cycle_started_at.isoformat(),
                         "cycle_id": cycle_id,
-                        "symbol": symbol,
+                        "symbol": sym,
                         "mode": self.mode_summary.mode.value,
                         "error": str(exc) or repr(exc),
                         "error_type": type(exc).__qualname__,
                         "traceback": _tb.format_exc(),
                     },
                 )
+                return sym, None
+
+        results = await _asyncio.gather(*[_fetch_symbol_feature(s) for s in configured])
+        for sym, fv in results:
+            if fv is not None:
+                features[sym] = fv
 
         if self.mode_summary.paper_execution and self.paper_execution is not None:
             self.paper_execution.mark_to_market(features, cycle_id=cycle_id, ts=cycle_started_at)
@@ -249,7 +258,10 @@ class DecisionRuntimeService:
                             decision=exit_decision,
                             account_snapshot=self.paper_execution.account_state(
                                 now=cycle_started_at,
-                            ).to_snapshot(now=cycle_started_at),
+                            ).to_snapshot(
+                                now=cycle_started_at,
+                                daily_drawdown_pct=self.paper_execution.drawdown_pct(),
+                            ),
                             order_request_preview=None,
                         )
                         self.journal.record(self.decision_stream(), exit_journal_entry)
@@ -258,7 +270,9 @@ class DecisionRuntimeService:
             account_state = self.paper_execution.account_state(now=cycle_started_at)
         else:
             account_state = await self.reconciler.reconcile()
-        account_snapshot = account_state.to_snapshot(now=cycle_started_at)
+
+        paper_dd = self.paper_execution.drawdown_pct() if self.paper_execution is not None and self.mode_summary.paper_execution else 0.0
+        account_snapshot = account_state.to_snapshot(now=cycle_started_at, daily_drawdown_pct=paper_dd)
 
         decisions: list[TradeDecision] = []
         open_symbols: set[str] = set()
@@ -335,7 +349,7 @@ class DecisionRuntimeService:
                     ts=cycle_started_at,
                 )
                 account_state = self.paper_execution.account_state(now=cycle_started_at)
-                account_snapshot = account_state.to_snapshot(now=cycle_started_at)
+                account_snapshot = account_state.to_snapshot(now=cycle_started_at, daily_drawdown_pct=self.paper_execution.drawdown_pct())
 
         return DecisionRuntimeResult(
             cycle_id=cycle_id,
@@ -470,13 +484,18 @@ class DecisionRuntimeService:
             "feature_stale_seconds": feature.stale_seconds,
             "source_feature_ts": feature.source_ts.isoformat() if feature.source_ts is not None else None,
             "source_lag_seconds": feature.source_lag_seconds,
-            "decision": decision,
+            "decision_id": decision.decision_id,
             "decision_status": decision.status.value,
             "regime": decision.regime.value,
+            "side": decision.side.value if decision.side is not None else None,
             "selected_strategy": decision.selected_strategy,
             "action_score": decision.action_score,
+            "rationale": decision.rationale,
             "reject_reason": decision.rationale[0] if decision.rationale and decision.status == DecisionStatus.NO_TRADE else "",
             "risk": risk_payload,
             "order_request_preview": order_request_preview,
-            "account_snapshot": account_snapshot,
+            "equity": account_snapshot.equity,
+            "gross_exposure": account_snapshot.gross_exposure,
+            "open_positions": account_snapshot.open_positions,
+            "daily_drawdown_pct": account_snapshot.daily_drawdown_pct,
         }

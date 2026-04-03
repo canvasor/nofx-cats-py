@@ -45,6 +45,7 @@ class PaperExecutionService:
         self.last_funding_applied_at: dict[str, datetime] = {}
         self.position_metadata: dict[str, PositionEntryMeta] = {}
         self.last_exit_time: dict[str, datetime] = {}
+        self.session_high_equity = Decimal(str(starting_balance))
         self.state = AccountState()
         self.state.upsert_balance(
             BalanceState(
@@ -58,7 +59,17 @@ class PaperExecutionService:
     def account_state(self, *, now: datetime | None = None) -> AccountState:
         self.state.record_user_stream_event(now)
         self.state.mark_reconciled(now)
+        equity = self.state.total_equity()
+        if equity > self.session_high_equity:
+            self.session_high_equity = equity
         return self.state
+
+    def drawdown_pct(self) -> float:
+        """Current drawdown from session high watermark, as a negative percentage."""
+        if self.session_high_equity <= 0:
+            return 0.0
+        equity = self.state.total_equity()
+        return float((equity - self.session_high_equity) / self.session_high_equity) * 100.0
 
     def is_in_cooldown(self, symbol: str, now: datetime, cooldown_minutes: float) -> bool:
         exit_time = self.last_exit_time.get(symbol)
