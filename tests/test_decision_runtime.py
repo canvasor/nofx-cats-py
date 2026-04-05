@@ -456,3 +456,125 @@ def test_global_data_diagnostic_logged() -> None:
     assert "global_data_diagnostic" in streams
     diag = next(e[1] for e in journal.entries if e[0] == "global_data_diagnostic")
     assert "BTCUSDT" in diag["configured_symbols"]
+
+
+def test_decision_runtime_blocks_new_entries_during_drawdown() -> None:
+    """When drawdown exceeds soft limit and positions are open, block new entries."""
+
+    class SelectiveExecuteEngine:
+        """Only opens BTCUSDT, returns NO_TRADE for others."""
+        def decide(self, feature, account_snapshot) -> TradeDecision:
+            if feature.symbol == "BTCUSDT":
+                return TradeDecision.execute(
+                    decision_id=f"decision-{feature.symbol.lower()}",
+                    symbol=feature.symbol,
+                    regime=MarketRegime.TREND,
+                    side=Side.BUY,
+                    rationale=["signal approved"],
+                    risk=RiskDecision(
+                        status=RiskDecisionStatus.APPROVED,
+                        reason="approved",
+                        symbol_tier=SymbolTier.CORE,
+                        approved_notional=125.0,
+                        approved_leverage=1.5,
+                        risk_budget_bps=25.0,
+                    ),
+                    action_score=12.0,
+                    selected_strategy="trend_following",
+                )
+            return TradeDecision.no_trade(
+                decision_id=f"decision-{feature.symbol.lower()}",
+                symbol=feature.symbol,
+                regime=MarketRegime.TREND,
+                rationale=["test skip"],
+            )
+
+    journal = MemoryJournal()
+    service, paper = _make_paper_runtime(
+        journal,
+        decision_engine=SelectiveExecuteEngine(),
+        symbols=["BTCUSDT", "ETHUSDT"],
+    )
+
+    # Cycle 1: opens BTCUSDT only, ETHUSDT gets NO_TRADE from engine
+    asyncio.run(service.run_cycle())
+    assert paper.state.open_position_count() == 1
+
+    # Simulate drawdown: push high watermark up so drawdown exceeds -1.5%
+    paper.session_high_equity = paper.state.total_equity() * 2
+
+    # Cycle 2: BTCUSDT blocked by already-open, ETHUSDT should be blocked by drawdown
+    result = asyncio.run(service.run_cycle())
+
+    eth_decisions = [d for d in result.decisions if d.symbol == "ETHUSDT"]
+    assert len(eth_decisions) == 1
+    assert eth_decisions[0].status == DecisionStatus.NO_TRADE
+    assert "drawdown soft limit reached" in eth_decisions[0].rationale
+
+
+def test_exit_journal_entry_includes_exit_specific_fields() -> None:
+    """Exit journal entries should include exit_reason, hold_hours, and realized_pnl_delta."""
+    from cats_py.exits.evaluator import ExitConfig, PositionExitEvaluator
+
+    class CrashPriceNofx(DummyNofx):
+        """Returns very low price to trigger stop loss."""
+        def __init__(self) -> None:
+            super().__init__()
+            self.crash = False
+
+        async def coin(self, symbol: str) -> dict[str, object]:
+            data = await super().coin(symbol)
+            if self.crash:
+                data["data"]["price"] = 100  # type: ignore[index]
+            return data
+
+    nofx = CrashPriceNofx()
+    journal = MemoryJournal()
+    paper = PaperExecutionService(
+        journal=journal,
+        starting_balance=10_000.0,
+        slippage_bps=0.0,
+        taker_fee_bps=0.0,
+        funding_interval_hours=8.0,
+    )
+    service = DecisionRuntimeService(
+        nofx=nofx,
+        decision_engine=ExecuteDecisionEngine(),
+        reconciler=DummyReconciler(AccountState()),
+        journal=journal,  # type: ignore[arg-type]
+        app_config=AppConfig(
+            mode=RuntimeMode.PAPER,
+            core_loop_interval_seconds=1,
+            nofx_stale_kill_seconds=45,
+            paper_starting_balance=10_000.0,
+            paper_fill_slippage_bps=0.0,
+            paper_taker_fee_bps=0.0,
+            paper_funding_interval_hours=8.0,
+        ),
+        symbol_config=SymbolConfig(core=["BTCUSDT"], liquid_alt=[], experimental=[]),
+        mode_summary=make_mode_summary(RuntimeMode.PAPER),
+        paper_execution=paper,
+        exit_evaluator=PositionExitEvaluator(ExitConfig(
+            stop_loss_pct=0.001,  # very tight to trigger easily
+            max_hold_hours=999,
+        )),
+    )
+
+    # Cycle 1: open position at price=50000
+    asyncio.run(service.run_cycle())
+    assert paper.state.open_position_count() == 1
+
+    # Cycle 2: crash price to trigger stop loss
+    nofx.crash = True
+    nofx.timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    service.response_cache.clear()
+    asyncio.run(service.run_cycle())
+
+    exit_entries = [(s, p) for s, p in journal.entries if s == "exit_decision_log"]
+    assert len(exit_entries) >= 1
+    exit_entry = exit_entries[0][1]
+    assert "exit_reason" in exit_entry
+    assert exit_entry["exit_reason"] == "exit_stop_loss"
+    assert "hold_hours" in exit_entry
+    assert isinstance(exit_entry["hold_hours"], float)
+    assert "realized_pnl_delta" in exit_entry

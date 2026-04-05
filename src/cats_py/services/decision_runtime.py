@@ -13,6 +13,7 @@ from cats_py.domain.enums import DecisionStatus, MarketRegime, OrderType
 from cats_py.domain.models import AccountSnapshot, AccountState, FeatureVector, TradeDecision
 from cats_py.exits.evaluator import PositionExitEvaluator
 from cats_py.journal.recorder import JournalRecorder
+from cats_py.risk.constitution import RiskPolicy
 from cats_py.services.decision_engine import DecisionEngine
 from cats_py.services.paper_execution import PaperExecutionService
 from cats_py.services.reconciliation import AccountReconciler
@@ -202,32 +203,35 @@ class DecisionRuntimeService:
 
         import asyncio as _asyncio
 
-        async def _fetch_symbol_feature(sym: str) -> tuple[str, FeatureVector | None]:
-            try:
-                fv = await self._build_feature(
-                    sym,
-                    now=cycle_started_at,
-                    request_stats=request_stats,
-                    query_rank_map=query_rank_map,
-                    ai300_level_map=ai300_level_map,
-                )
-                return sym, fv
-            except Exception as exc:  # noqa: BLE001
-                import traceback as _tb
+        _nofx_semaphore = _asyncio.Semaphore(5)
 
-                self.journal.record(
-                    "decision_cycle_error",
-                    {
-                        "ts": cycle_started_at.isoformat(),
-                        "cycle_id": cycle_id,
-                        "symbol": sym,
-                        "mode": self.mode_summary.mode.value,
-                        "error": str(exc) or repr(exc),
-                        "error_type": type(exc).__qualname__,
-                        "traceback": _tb.format_exc(),
-                    },
-                )
-                return sym, None
+        async def _fetch_symbol_feature(sym: str) -> tuple[str, FeatureVector | None]:
+            async with _nofx_semaphore:
+                try:
+                    fv = await self._build_feature(
+                        sym,
+                        now=cycle_started_at,
+                        request_stats=request_stats,
+                        query_rank_map=query_rank_map,
+                        ai300_level_map=ai300_level_map,
+                    )
+                    return sym, fv
+                except Exception as exc:  # noqa: BLE001
+                    import traceback as _tb
+
+                    self.journal.record(
+                        "decision_cycle_error",
+                        {
+                            "ts": cycle_started_at.isoformat(),
+                            "cycle_id": cycle_id,
+                            "symbol": sym,
+                            "mode": self.mode_summary.mode.value,
+                            "error": str(exc) or repr(exc),
+                            "error_type": type(exc).__qualname__,
+                            "traceback": _tb.format_exc(),
+                        },
+                    )
+                    return sym, None
 
         results = await _asyncio.gather(*[_fetch_symbol_feature(s) for s in configured])
         for sym, fv in results:
@@ -247,7 +251,8 @@ class DecisionRuntimeService:
                 for exit_decision in exit_decisions:
                     exit_feature = features.get(exit_decision.symbol)
                     if exit_feature is not None:
-                        self.paper_execution.apply_decision(
+                        exit_meta = self.paper_execution.position_metadata.get(exit_decision.symbol)
+                        exit_fill = self.paper_execution.apply_decision(
                             exit_decision, exit_feature, cycle_id=cycle_id, ts=cycle_started_at,
                         )
                         exit_journal_entry = self._build_journal_entry(
@@ -264,6 +269,14 @@ class DecisionRuntimeService:
                             ),
                             order_request_preview=None,
                         )
+                        if exit_meta is not None:
+                            exit_journal_entry["exit_reason"] = exit_decision.selected_strategy or ""
+                            exit_journal_entry["hold_hours"] = round(
+                                (cycle_started_at - exit_meta.entry_time).total_seconds() / 3600.0, 2
+                            )
+                            exit_journal_entry["entry_strategy"] = exit_meta.strategy_name
+                        if exit_fill is not None:
+                            exit_journal_entry["realized_pnl_delta"] = float(exit_fill.realized_pnl_delta)
                         self.journal.record(self.decision_stream(), exit_journal_entry)
                         self.journal.record("exit_decision_log", exit_journal_entry)
 
@@ -321,6 +334,21 @@ class DecisionRuntimeService:
                     rationale=[
                         "position already open",
                         f"{symbol} has existing position",
+                    ],
+                )
+            elif (
+                self.mode_summary.paper_execution
+                and self.paper_execution is not None
+                and open_symbols
+                and paper_dd <= RiskPolicy().daily_drawdown_soft_pct
+            ):
+                decision = TradeDecision.no_trade(
+                    decision_id=f"drawdown-gate-{symbol.lower()}-{cycle_id[:8]}",
+                    symbol=symbol,
+                    regime=MarketRegime.DEFENSE,
+                    rationale=[
+                        "drawdown soft limit reached",
+                        f"drawdown {paper_dd:.2f}% with {len(open_symbols)} open positions",
                     ],
                 )
             else:

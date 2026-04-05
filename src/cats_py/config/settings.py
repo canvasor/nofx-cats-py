@@ -55,7 +55,7 @@ class AppConfig(BaseModel):
     paper_funding_interval_hours: float = 8.0
     exit_stop_loss_pct: float = 0.015
     exit_take_profit_pct: float = 0.02
-    exit_max_hold_hours: float = 4.0
+    exit_max_hold_hours: float = 12.0
     exit_trailing_stop_pct: float = 0.025
     exit_cooldown_minutes: float = 30.0
     nofx: dict[str, object] = Field(default_factory=dict)

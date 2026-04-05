@@ -31,7 +31,7 @@ class PositionEntryMeta:
 class ExitConfig:
     stop_loss_pct: float = 0.015
     take_profit_pct: float = 0.02
-    max_hold_hours: float = 4.0
+    max_hold_hours: float = 12.0
     trailing_stop_pct: float = 0.025
 
 
@@ -72,7 +72,7 @@ class PositionExitEvaluator:
         now: datetime,
     ) -> str | None:
         entry_notional = abs(float(position.entry_price) * float(position.quantity))
-        if entry_notional <= 0:
+        if entry_notional < 1.0:
             return None
         unrealized = float(position.unrealized_pnl)
         pnl_ratio = unrealized / entry_notional

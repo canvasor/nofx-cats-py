@@ -231,3 +231,46 @@ def test_exception_in_one_position_does_not_block_others() -> None:
     # ETHUSDT should still get its exit even though BTCUSDT errored
     eth_exits = [e for e in exits if e.symbol == "ETHUSDT"]
     assert len(eth_exits) == 1
+
+
+def test_dust_position_skipped_by_exit_evaluator() -> None:
+    """Positions with notional < $1 (dust from Decimal rounding) should not trigger exits."""
+    evaluator = PositionExitEvaluator(ExitConfig(stop_loss_pct=0.001))
+    state = AccountState()
+    # Simulate a dust position: qty=0.000007 at price=67000 → notional=$0.47
+    dust_pos = make_position("BTCUSDT", qty=0.000007, entry=67000.0, mark=60000.0)
+    state.upsert_position(dust_pos)
+    features = {"BTCUSDT": make_feature("BTCUSDT", price=60000.0)}
+    now = datetime.now(timezone.utc)
+    meta = {"BTCUSDT": PositionEntryMeta(
+        entry_time=now - timedelta(hours=24),
+        peak_price=70000.0,
+        strategy_name="trend_following",
+    )}
+
+    exits = evaluator.evaluate(state, features, meta, now)
+
+    assert len(exits) == 0
+
+
+def test_default_max_hold_hours_is_12() -> None:
+    """Default max_hold_hours widened from 4h to 12h to let TP/trailing trigger first."""
+    config = ExitConfig()
+    assert config.max_hold_hours == 12.0
+
+    evaluator = PositionExitEvaluator()
+    state = AccountState()
+    pos = make_position("BTCUSDT", qty=1.0, entry=100.0, mark=100.5)
+    state.upsert_position(pos)
+    features = {"BTCUSDT": make_feature("BTCUSDT", price=100.5)}
+    now = datetime.now(timezone.utc)
+    # 5 hours — should NOT trigger with 12h default (would have triggered with old 4h)
+    meta = {"BTCUSDT": PositionEntryMeta(
+        entry_time=now - timedelta(hours=5),
+        peak_price=101.0,
+        strategy_name="trend_following",
+    )}
+
+    exits = evaluator.evaluate(state, features, meta, now)
+
+    assert len(exits) == 0
